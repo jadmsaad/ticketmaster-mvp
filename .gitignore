@@ -1,1 +1,14 @@
+# secrets
 .env
+
+# macOS
+.DS_Store
+
+# compiled binaries (e.g. go build -o api ./cmd/api)
+/bin/
+/api
+/seed
+
+# test coverage output
+*.out
+coverage.html

@@ -85,4 +85,5 @@ Last updated: 2026-11-02
 
 - Chose Ticketmaster as the first project and agreed on the trimmed scope and task order, and chose Go, one service, and AWS after Task 4.
 - Agreed the Task 1 approach and built it: seat ownership lives in a `bookings` table with no unique constraint on `seat_id` until Task 3. The `seed` command also runs migrations. Waiting on review, so the Task 1 checkbox stays open.
+- During review: moved shared HTTP helpers into `internal/httpx`, and switched database access from hand-written pgx code to sqlc. The user knows SQL and wants production Go patterns, not basics.
 - Still undecided: when Nginx gets added (at the AWS deployment, or whenever rate limiting is first needed).
