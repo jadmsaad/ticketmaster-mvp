@@ -1,0 +1,47 @@
+# The password below is for this local database only, and the ports are only
+# reachable from this Mac.
+x-app: &app
+  build: .
+  environment:
+    DATABASE_URL: postgres://ticketmaster:ticketmaster@db:5432/ticketmaster?sslmode=disable
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ticketmaster
+      POSTGRES_PASSWORD: ticketmaster
+      POSTGRES_DB: ticketmaster
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticketmaster -d ticketmaster"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Runs migrations and seed data once, then exits.
+  seed:
+    <<: *app
+    command: ["seed"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  db-data:
