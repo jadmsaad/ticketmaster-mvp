@@ -56,6 +56,8 @@ func (s *Store) GetEvent(ctx context.Context, id int64) (Event, error) {
 	return toEvent(row), nil
 }
 
+// toEvent converts a row to the API type. Times are always returned in UTC,
+// whatever the server's local time zone.
 func toEvent(row eventdb.Event) Event {
-	return Event{ID: row.ID, Name: row.Name, Venue: row.Venue, StartsAt: row.StartsAt}
+	return Event{ID: row.ID, Name: row.Name, Venue: row.Venue, StartsAt: row.StartsAt.UTC()}
 }

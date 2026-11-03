@@ -26,6 +26,7 @@ Last updated: 2026-11-02
 
 - **Editor:** VS Code, with the extensions for Go, Docker, and Terraform. Claude Code runs in the VS Code extension panel.
 - **Local services:** Postgres, Redis, and Elasticsearch run in Docker Compose, not installed directly on the Mac. The database and Redis CLIs run through their containers.
+- **Running the apps:** the services run natively with `go run` for fast restarts: `make setup`, then `make run-event` and `make run-booking`. `make up-all` runs everything in containers, as in production.
 - **Installed on the Mac when needed (Homebrew):**
   - Epic 1: Go
   - Epic 2: k6

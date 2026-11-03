@@ -28,8 +28,9 @@ func TestGetEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// == also compares the time zone, so this checks StartsAt is UTC.
 	want := Event{ID: id, Name: "Test", Venue: "Hall", StartsAt: startsAt}
-	if !got.StartsAt.Equal(want.StartsAt) || got.ID != want.ID || got.Name != want.Name || got.Venue != want.Venue {
+	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 

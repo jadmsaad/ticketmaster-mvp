@@ -1,10 +1,14 @@
 # Local stack. Passwords are for this local database only, and ports are only
 # reachable from this Mac.
 #
-# Startup order:
+#   docker compose up -d                  Postgres only (day-to-day dev; run apps with make)
+#   docker compose --profile apps up -d   everything in containers, as in production
+#
+# Startup order with the apps profile:
 #   db → event-migrate, booking-migrate → seed, event-api, booking-api
 
 x-event: &event
+  profiles: [apps]
   build:
     context: .
     args:
@@ -14,6 +18,7 @@ x-event: &event
     DATABASE_URL: postgres://event_api:event_api@db:5432/ticketmaster?sslmode=disable
 
 x-booking: &booking
+  profiles: [apps]
   build:
     context: .
     args:
@@ -79,8 +84,9 @@ services:
         condition: service_completed_successfully
     healthcheck: *api-healthcheck
 
-  # Dev-only sample data. Re-run with: docker compose run --rm seed -reset
+  # Dev-only sample data. To wipe and re-seed: make reset
   seed:
+    profiles: [apps]
     build:
       context: .
       args:
