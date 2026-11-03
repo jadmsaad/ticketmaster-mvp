@@ -2,7 +2,7 @@
 // versions:
 //   sqlc v1.31.1
 
-package eventdb
+package bookingdb
 
 import (
 	"time"
@@ -13,13 +13,6 @@ type Booking struct {
 	SeatID    int64
 	UserID    string
 	CreatedAt time.Time
-}
-
-type Event struct {
-	ID       int64
-	Name     string
-	Venue    string
-	StartsAt time.Time
 }
 
 type Seat struct {

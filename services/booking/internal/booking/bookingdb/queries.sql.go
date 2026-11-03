@@ -3,60 +3,11 @@
 //   sqlc v1.31.1
 // source: queries.sql
 
-package eventdb
+package bookingdb
 
 import (
 	"context"
 )
-
-const getEvent = `-- name: GetEvent :one
-SELECT id, name, venue, starts_at
-FROM events
-WHERE id = $1
-`
-
-func (q *Queries) GetEvent(ctx context.Context, id int64) (Event, error) {
-	row := q.db.QueryRow(ctx, getEvent, id)
-	var i Event
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Venue,
-		&i.StartsAt,
-	)
-	return i, err
-}
-
-const listEvents = `-- name: ListEvents :many
-SELECT id, name, venue, starts_at
-FROM events
-ORDER BY starts_at, id
-`
-
-func (q *Queries) ListEvents(ctx context.Context) ([]Event, error) {
-	rows, err := q.db.Query(ctx, listEvents)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Event
-	for rows.Next() {
-		var i Event
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Venue,
-			&i.StartsAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
 
 const listSeats = `-- name: ListSeats :many
 SELECT s.id, s.section, s.row, s.number, s.price_cents,
@@ -76,7 +27,7 @@ type ListSeatsRow struct {
 }
 
 // A seat is available if it has no booking. NOT EXISTS rather than a LEFT
-// JOIN: until Task 3 a seat can have several bookings, and a join would
+// JOIN: until Epic 3 a seat can have several bookings, and a join would
 // return that seat once per booking.
 func (q *Queries) ListSeats(ctx context.Context, eventID int64) ([]ListSeatsRow, error) {
 	rows, err := q.db.Query(ctx, listSeats, eventID)

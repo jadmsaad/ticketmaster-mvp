@@ -1,9 +1,32 @@
-# The password below is for this local database only, and the ports are only
+# Local stack. Passwords are for this local database only, and ports are only
 # reachable from this Mac.
-x-app: &app
-  build: .
+#
+# Startup order:
+#   db → event-migrate, booking-migrate → seed, event-api, booking-api
+
+x-event: &event
+  build:
+    context: .
+    args:
+      CMD_PATH: ./services/event/cmd/event-api
+  image: ticketmaster/event-api
   environment:
-    DATABASE_URL: postgres://ticketmaster:ticketmaster@db:5432/ticketmaster?sslmode=disable
+    DATABASE_URL: postgres://event_api:event_api@db:5432/ticketmaster?sslmode=disable
+
+x-booking: &booking
+  build:
+    context: .
+    args:
+      CMD_PATH: ./services/booking/cmd/booking-api
+  image: ticketmaster/booking-api
+  environment:
+    DATABASE_URL: postgres://booking_api:booking_api@db:5432/ticketmaster?sslmode=disable
+
+x-api-healthcheck: &api-healthcheck
+  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+  interval: 5s
+  timeout: 3s
+  retries: 5
 
 services:
   db:
@@ -16,32 +39,60 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ticketmaster -d ticketmaster"]
       interval: 2s
       timeout: 3s
       retries: 15
 
-  # Runs migrations and seed data once, then exits.
-  seed:
-    <<: *app
-    command: ["seed"]
+  # One-off migration jobs: each service migrates its own schema, then exits.
+  event-migrate:
+    <<: *event
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
 
-  api:
-    <<: *app
-    ports:
-      - "127.0.0.1:8080:8080"
+  booking-migrate:
+    <<: *booking
+    command: ["migrate"]
     depends_on:
-      seed:
+      db:
+        condition: service_healthy
+
+  event-api:
+    <<: *event
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      event-migrate:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+    healthcheck: *api-healthcheck
+
+  booking-api:
+    <<: *booking
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on:
+      booking-migrate:
+        condition: service_completed_successfully
+    healthcheck: *api-healthcheck
+
+  # Dev-only sample data. Re-run with: docker compose run --rm seed -reset
+  seed:
+    build:
+      context: .
+      args:
+        CMD_PATH: ./cmd/seed
+    image: ticketmaster/seed
+    environment:
+      DATABASE_URL: postgres://ticketmaster:ticketmaster@db:5432/ticketmaster?sslmode=disable
+    depends_on:
+      event-migrate:
+        condition: service_completed_successfully
+      booking-migrate:
+        condition: service_completed_successfully
 
 volumes:
   db-data:

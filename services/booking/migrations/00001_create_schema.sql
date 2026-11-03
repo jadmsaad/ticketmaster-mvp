@@ -1,14 +1,13 @@
--- +goose Up
-CREATE TABLE events (
-    id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name      TEXT NOT NULL,
-    venue     TEXT NOT NULL,
-    starts_at TIMESTAMPTZ NOT NULL
-);
+-- Runs with search_path set to the "booking" schema.
 
+-- +goose Up
+
+-- Seat inventory for one event. event_id deliberately has no foreign key: events
+-- belong to the event service, and a cross-service FK would block moving
+-- booking to its own database or sharding it by event_id.
 CREATE TABLE seats (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_id    BIGINT NOT NULL REFERENCES events (id),
+    event_id    BIGINT NOT NULL,
     section     TEXT NOT NULL,
     row         TEXT NOT NULL,
     number      INT NOT NULL,
@@ -16,8 +15,8 @@ CREATE TABLE seats (
     UNIQUE (event_id, section, row, number)
 );
 
--- Deliberately NOT unique: Task 2 needs double-bookings to be possible so it
--- can count them. Task 3 adds the uniqueness guarantee.
+-- Deliberately NOT unique on seat_id: Epic 2 needs double-bookings to be
+-- possible so it can count them. Epic 3 adds the uniqueness guarantee.
 CREATE TABLE bookings (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     seat_id    BIGINT NOT NULL REFERENCES seats (id),
@@ -30,4 +29,3 @@ CREATE INDEX bookings_seat_id_idx ON bookings (seat_id);
 -- +goose Down
 DROP TABLE bookings;
 DROP TABLE seats;
-DROP TABLE events;

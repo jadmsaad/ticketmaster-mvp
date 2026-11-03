@@ -1,5 +1,11 @@
-// Command seed applies migrations and creates the sample event with its seats.
+// Command seed creates the sample event and its seat inventory. Dev only.
+//
+// It connects as the admin user and writes to both services' schemas. That
+// crosses the service boundary on purpose: in production, booking would create
+// inventory when it receives an "event created" message.
+//
 // It is safe to re-run. Pass -reset to wipe all data first, including bookings.
+// Run it after both services' migrations.
 package main
 
 import (
@@ -11,8 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"ticketmaster-mvp/internal/db"
 )
 
 const (
@@ -34,10 +38,6 @@ func main() {
 }
 
 func run(ctx context.Context, databaseURL string, reset bool) error {
-	if err := db.Migrate(ctx, databaseURL); err != nil {
-		return err
-	}
-
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -47,13 +47,14 @@ func run(ctx context.Context, databaseURL string, reset bool) error {
 	// One transaction, so an event can never exist without its seats.
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		if reset {
-			if _, err := tx.Exec(ctx, `TRUNCATE events, seats, bookings RESTART IDENTITY`); err != nil {
+			_, err := tx.Exec(ctx, `TRUNCATE event.events, booking.seats, booking.bookings RESTART IDENTITY`)
+			if err != nil {
 				return fmt.Errorf("reset: %w", err)
 			}
 		}
 
 		var exists bool
-		err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE name = $1)`, eventName).Scan(&exists)
+		err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM event.events WHERE name = $1)`, eventName).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("check event: %w", err)
 		}
@@ -65,7 +66,7 @@ func run(ctx context.Context, databaseURL string, reset bool) error {
 		var eventID int64
 		startsAt := time.Date(2027, time.March, 1, 20, 0, 0, 0, time.UTC)
 		err = tx.QueryRow(ctx, `
-			INSERT INTO events (name, venue, starts_at)
+			INSERT INTO event.events (name, venue, starts_at)
 			VALUES ($1, $2, $3)
 			RETURNING id`, eventName, venue, startsAt).Scan(&eventID)
 		if err != nil {
@@ -73,14 +74,14 @@ func run(ctx context.Context, databaseURL string, reset bool) error {
 		}
 
 		tag, err := tx.Exec(ctx, `
-			INSERT INTO seats (event_id, section, row, number, price_cents)
+			INSERT INTO booking.seats (event_id, section, row, number, price_cents)
 			SELECT $1::bigint, 'A', r::text, n, $2::int
 			FROM generate_series(1, $3::int) AS r, generate_series(1, $4::int) AS n`,
 			eventID, priceCents, rows, seatsInRow)
 		if err != nil {
 			return fmt.Errorf("insert seats: %w", err)
 		}
-		slog.Info("seeded", "event", eventName, "seats", tag.RowsAffected())
+		slog.Info("seeded", "event", eventName, "event_id", eventID, "seats", tag.RowsAffected())
 		return nil
 	})
 }

@@ -2,6 +2,7 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,19 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 func InternalError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 	WriteError(w, http.StatusInternalServerError, "internal server error")
+}
+
+// Health returns a handler that reports 200 when check succeeds and 503
+// otherwise. Load balancers use it to stop routing to unhealthy instances.
+func Health(check func(context.Context) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := check(r.Context()); err != nil {
+			slog.Warn("health check failed", "error", err)
+			WriteError(w, http.StatusServiceUnavailable, "unhealthy")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 type errorBody struct {
