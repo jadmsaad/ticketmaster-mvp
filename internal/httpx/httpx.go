@@ -36,7 +36,7 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 // InternalError logs err and sends a generic 500, so internal details
 // never reach the client.
 func InternalError(w http.ResponseWriter, r *http.Request, err error) {
-	slog.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	slog.Error("request failed", "request_id", RequestID(r.Context()), "method", r.Method, "path", r.URL.Path, "error", err)
 	WriteError(w, http.StatusInternalServerError, "internal server error")
 }
 

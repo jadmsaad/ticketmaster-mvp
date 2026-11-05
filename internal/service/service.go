@@ -6,6 +6,12 @@
 //
 // Migrations run as a separate one-off job before deploys, never at server
 // startup, so many replicas don't race to change the schema.
+//
+// Environment:
+//
+//	DATABASE_URL   required
+//	ADDR           listen address (default :8080)
+//	DB_MAX_CONNS   connection pool size (default 20)
 package service
 
 import (
@@ -17,10 +23,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"ticketmaster-mvp/internal/httpx"
 	"ticketmaster-mvp/internal/postgres"
@@ -31,6 +40,35 @@ type Config struct {
 	Migrations fs.FS
 	// Routes registers the service's endpoints.
 	Routes func(mux *http.ServeMux, pool *pgxpool.Pool)
+}
+
+// env is the runtime configuration read from environment variables.
+type env struct {
+	databaseURL string
+	addr        string
+	maxConns    int32
+}
+
+func loadEnv() (env, error) {
+	e := env{
+		databaseURL: os.Getenv("DATABASE_URL"),
+		addr:        os.Getenv("ADDR"),
+		maxConns:    20,
+	}
+	if e.databaseURL == "" {
+		return env{}, errors.New("DATABASE_URL is not set")
+	}
+	if e.addr == "" {
+		e.addr = ":8080"
+	}
+	if v := os.Getenv("DB_MAX_CONNS"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil || n < 1 {
+			return env{}, fmt.Errorf("DB_MAX_CONNS must be a positive integer, got %q", v)
+		}
+		e.maxConns = int32(n)
+	}
+	return e, nil
 }
 
 // Main runs the service and exits the process when it stops.
@@ -48,16 +86,16 @@ func run(cfg Config, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		return errors.New("DATABASE_URL is not set")
+	e, err := loadEnv()
+	if err != nil {
+		return err
 	}
 
 	switch {
 	case len(args) == 0:
-		return serve(ctx, cfg, databaseURL)
+		return serve(ctx, cfg, e)
 	case len(args) == 1 && args[0] == "migrate":
-		if err := postgres.Migrate(ctx, databaseURL, cfg.Migrations); err != nil {
+		if err := postgres.Migrate(ctx, e.databaseURL, cfg.Migrations); err != nil {
 			return err
 		}
 		slog.Info("migrations applied")
@@ -67,30 +105,34 @@ func run(cfg Config, args []string) error {
 	}
 }
 
-func serve(ctx context.Context, cfg Config, databaseURL string) error {
-	pool, err := pgxpool.New(ctx, databaseURL)
+func serve(ctx context.Context, cfg Config, e env) error {
+	pool, err := postgres.NewPool(ctx, e.databaseURL, e.maxConns)
 	if err != nil {
-		return fmt.Errorf("create connection pool: %w", err)
+		return err
 	}
 	defer pool.Close()
+	prometheus.MustRegister(postgres.NewPoolCollector(pool))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.Health(pool.Ping))
+	// Internal only: the load balancer routes just the API paths, so this
+	// isn't reachable from the internet.
+	mux.Handle("GET /metrics", promhttp.Handler())
 	cfg.Routes(mux, pool)
 
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Addr:    e.addr,
+		Handler: httpx.Observe(mux),
+		// Bound how long one slow or idle client can hold a connection.
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "addr", addr)
+		slog.Info("listening", "addr", e.addr, "db_max_conns", e.maxConns)
 		serveErr <- server.ListenAndServe()
 	}()
 
