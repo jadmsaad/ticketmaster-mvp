@@ -21,7 +21,7 @@ func Migrate(ctx context.Context, databaseURL string, migrations fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, conn, migrations)
 	if err != nil {

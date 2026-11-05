@@ -42,7 +42,7 @@ func run(ctx context.Context, databaseURL string, reset bool) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	// One transaction, so an event can never exist without its seats.
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {

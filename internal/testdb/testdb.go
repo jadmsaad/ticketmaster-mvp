@@ -32,7 +32,7 @@ func New(t *testing.T, schema string, migrations fs.FS) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 	quoted := pgx.Identifier{dbName}.Sanitize()
 	for _, stmt := range []string{
 		"DROP DATABASE IF EXISTS " + quoted + " WITH (FORCE)",
@@ -58,7 +58,9 @@ func New(t *testing.T, schema string, migrations fs.FS) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	_, err = conn.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize())
-	conn.Close(ctx)
+	if closeErr := conn.Close(ctx); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

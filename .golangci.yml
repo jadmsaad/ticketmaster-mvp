@@ -1,0 +1,28 @@
+# golangci-lint v2. Run locally with: make lint
+version: "2"
+
+linters:
+  # The defaults (errcheck, govet, ineffassign, staticcheck, unused), plus
+  # checks aimed at the bugs this kind of service tends to have.
+  enable:
+    - bodyclose      # HTTP response bodies left open
+    - errorlint      # error comparisons that break on wrapped errors
+    - gocritic       # common bug patterns and simplifications
+    - gosec          # security issues
+    - misspell
+    - noctx          # HTTP requests or queries without a context
+    - rowserrcheck   # rows.Err() not checked after iterating
+    - sqlclosecheck  # rows or statements not closed
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer conversion overflow: DB INT columns are converted to int on purpose
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - ticketmaster-mvp

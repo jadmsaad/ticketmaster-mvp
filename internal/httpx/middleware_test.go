@@ -21,7 +21,7 @@ func TestObserve(t *testing.T) {
 	handler := Observe(mux)
 
 	// An incoming request ID is reused and returned.
-	req := httptest.NewRequest(http.MethodGet, "/things/7", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/things/7", nil)
 	req.Header.Set("X-Request-ID", "abc123")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -35,7 +35,7 @@ func TestObserve(t *testing.T) {
 
 	// A request with no ID gets a generated one.
 	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nowhere", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/nowhere", nil))
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Fatal("no request ID generated")
 	}

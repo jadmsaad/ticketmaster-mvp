@@ -15,7 +15,11 @@ TEST_DB     := postgres://ticketmaster:ticketmaster@localhost:5432/postgres?sslm
 EVENT_CMD   := ./services/event/cmd/event-api
 BOOKING_CMD := ./services/booking/cmd/booking-api
 
-.PHONY: setup db migrate seed reset run-event run-booking test generate up-all down
+# Keep in sync with .github/workflows/ci.yml.
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+.PHONY: setup db migrate seed reset run-event run-booking test lint ci generate up-all down
 
 setup: db migrate seed ## Start Postgres, migrate, and seed
 
@@ -38,8 +42,17 @@ run-event: ## Run event-api on :8081
 run-booking: ## Run booking-api on :8082
 	DATABASE_URL=$(BOOKING_DB) ADDR=:8082 go run $(BOOKING_CMD)
 
-test: ## Run all tests against the local Postgres
-	TEST_POSTGRES_URL=$(TEST_DB) go test ./...
+test: ## Run all tests against the local Postgres, with the race detector
+	TEST_POSTGRES_URL=$(TEST_DB) go test -race -p 1 ./...
+
+lint: ## Run golangci-lint
+	$(GOLANGCI_LINT) run ./...
+
+ci: lint test ## Run the CI checks locally (except the Docker builds)
+	go build ./...
+	go mod tidy && git diff --exit-code -- go.mod go.sum
+	go tool sqlc diff
+	$(GOVULNCHECK) ./...
 
 generate: ## Regenerate sqlc code after changing queries or migrations
 	go tool sqlc generate

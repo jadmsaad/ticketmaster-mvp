@@ -4,7 +4,7 @@ Last updated: 2026-11-02
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 1 is nearly done. The split into `event-api` and `booking-api` is built and checked. Next step: review the split, commit it, then plan Epic 2.
+**Current status:** Epic 1 is nearly done. The service split and audit fixes are committed. Next step: the audit follow-ups (CI, linter, README, handler tests), then plan Epic 2.
 
 ## How we work
 
@@ -78,8 +78,9 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 - [x] Review: shared helpers moved to `internal/httpx`, database access switched to sqlc
 - [x] Split into `event-api` (:8081) and `booking-api` (:8082) in a monorepo with per-service folders (`services/<name>/{cmd,internal,migrations}`). Each service has its own schema and database user, migrations run as one-off jobs, and the seat map moved to booking.
 - [x] Audit fixes for load testing: explicit pool size (`DB_MAX_CONNS`, default 20), server timeouts, request logging with request IDs, and Prometheus `/metrics` (request latency by route, connection pool stats).
-- [ ] Audit follow-ups: CI (GitHub Actions), golangci-lint, README, HTTP handler tests with small store interfaces.
-- [ ] Review together, then commit.
+- [x] CI (GitHub Actions, on every PR and push to `main`): lint, tests with `-race` against Postgres, build, `go mod tidy`, `sqlc diff`, govulncheck, and Docker builds. golangci-lint v2 config in `.golangci.yml`. `make ci` runs the same checks locally. Won't run until the repo is pushed to GitHub.
+- [ ] Audit follow-ups: README, HTTP handler tests with small store interfaces.
+- [ ] Review together, then close the epic.
 
 ### Epic 2: Naive booking
 No protection, on purpose. Race 1,000 concurrent users for the same seats and count the double-bookings.
@@ -106,7 +107,7 @@ Add Elasticsearch/OpenSearch and sync it from Postgres.
 Admit users fairly during an on-sale surge.
 
 ### Epic 10: Observability stack (end game)
-The services already expose Prometheus `/metrics`. Add something that scrapes and stores them: Prometheus and Grafana in Docker Compose locally, and an ADOT collector sidecar pushing to Amazon Managed Prometheus or CloudWatch on AWS. Until then, load tests rely on k6's client-side numbers, logs, and `curl /metrics`.
+The services already expose Prometheus `/metrics`. Add something that scrapes and stores them: Prometheus and Grafana in Docker Compose locally, and an ADOT collector sidecar pushing to Amazon Managed Prometheus or CloudWatch on AWS. Until then, load tests rely on k6's client-side numbers, logs, and `curl /metrics`. Leaning towards switching to OpenTelemetry for metrics and traces here (the metrics code lives in `internal/httpx/middleware.go` and `internal/postgres/pool.go`). Pull/scrape is preferred over push. Decide all of this when the epic starts.
 
 ## AWS cost rules
 
