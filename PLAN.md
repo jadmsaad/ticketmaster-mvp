@@ -84,8 +84,8 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 - [x] Audit fixes for load testing: explicit pool size (`DB_MAX_CONNS`, default 20), server timeouts, request logging with request IDs, and Prometheus `/metrics` (request latency by route, connection pool stats).
 - [x] CI (GitHub Actions, on every PR and push to `main`): lint, tests with `-race` against Postgres, build, `go mod tidy`, `sqlc diff`, govulncheck, and Docker builds. golangci-lint v2 config in `.golangci.yml`. `make ci` runs the same checks locally. Won't run until the repo is pushed to GitHub.
 - [x] Handler tests: each handler declares a small store interface, tests use function-field fakes, requests go through the real routes, and bodies are compared as JSON (ADR 9). Shared helpers are in `internal/httpx/httpxtest`.
-- [ ] README.
-- [ ] Backfill ADRs 1–8 for decisions already made: Go; two services; a schema and database user per service; no cross-service foreign key; sqlc instead of an ORM; migrations as one-off jobs; no local gateway (ALB on AWS); apps run natively with only the database in Docker.
+- [ ] README (drafted, awaiting the user's review).
+- [ ] Backfill ADRs 1–8 (drafted in `docs/adr/`, awaiting the user's review).
 - [ ] Review together, then close the epic.
 
 ### Epic 2: Naive booking
