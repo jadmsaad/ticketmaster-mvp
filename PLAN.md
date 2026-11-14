@@ -4,7 +4,7 @@ Last updated: 2026-11-14
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 1 is nearly done. The service split and audit fixes are committed. CI is committed. Handler tests are done (ADR 9). Next step: the README, then plan Epic 2. AI lessons 1–2 interleave from here.
+**Current status:** Epic 1 is done (closed 2026-11-14). Next step: plan Epic 2 (naive booking) together. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
 
 ## How we work
 
@@ -76,7 +76,7 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 
 ## Epics
 
-### Epic 1: Foundation (in progress)
+### Epic 1: Foundation (done)
 - [x] Schema, migrations, and seed data (1 event, 100 seats)
 - [x] Event and seat-map endpoints, Docker Compose
 - [x] Review: shared helpers moved to `internal/httpx`, database access switched to sqlc
@@ -84,9 +84,10 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 - [x] Audit fixes for load testing: explicit pool size (`DB_MAX_CONNS`, default 20), server timeouts, request logging with request IDs, and Prometheus `/metrics` (request latency by route, connection pool stats).
 - [x] CI (GitHub Actions, on every PR and push to `main`): lint, tests with `-race` against Postgres, build, `go mod tidy`, `sqlc diff`, govulncheck, and Docker builds. golangci-lint v2 config in `.golangci.yml`. `make ci` runs the same checks locally. Won't run until the repo is pushed to GitHub.
 - [x] Handler tests: each handler declares a small store interface, tests use function-field fakes, requests go through the real routes, and bodies are compared as JSON (ADR 9). Shared helpers are in `internal/httpx/httpxtest`.
-- [ ] README (drafted, awaiting the user's review).
-- [ ] Backfill ADRs 1–8 (drafted in `docs/adr/`, awaiting the user's review).
-- [ ] Review together, then close the epic.
+- [x] README: pitch, architecture, key decisions linking the ADRs, how to run it locally, and the roadmap.
+- [x] ADRs 1–8 written for the decisions made before ADRs were adopted.
+- [x] Reviewed together and closed. Before closing, govulncheck flagged GO-2026-6859 in the Go 1.27.3 standard library, so `go.mod` moved to Go 1.27.4.
+- Deferred to later epics: separate liveness and readiness checks (Epic 5), `/v1` API versioning, a slimmer image, moving tool dependencies out of `go.mod`, and pushing to GitHub so CI runs (plus a scheduled govulncheck run).
 
 ### Epic 2: Naive booking
 No protection, on purpose. Race 1,000 concurrent users for the same seats and count the double-bookings.
@@ -186,3 +187,5 @@ AI features that were considered and rejected:
 - Decided to interleave the AI work: AI 1 (natural-language search) moves to right after Epic 3, using Postgres filters until Epic 8.
 - Chose ADRs for recording decisions (over a single decision log or Marina's per-change folders). Backfilling the 8 existing decisions is in the Epic 1 checklist.
 - Designed the handler tests in four decision steps: an interface plus a fake, function-field fakes, requests through the real routes, and bodies compared as JSON. Built them for both services, and recorded the reasoning in ADR 9. Checked that they fail on a renamed JSON field and on a mismatched path parameter.
+- Wrote ADRs 1–8 and the README, which the user reviewed and committed.
+- Closed Epic 1 after a full green `make ci` run. Moved to Go 1.27.4 for GO-2026-6859.
