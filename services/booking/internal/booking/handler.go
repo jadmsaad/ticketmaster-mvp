@@ -2,17 +2,24 @@
 package booking
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"ticketmaster-mvp/internal/httpx"
 )
 
-type Handler struct {
-	store *Store
+// seatStore is what the handler needs from the store. *Store satisfies it in
+// production; tests pass a fake.
+type seatStore interface {
+	ListSeats(ctx context.Context, eventID int64) ([]Seat, error)
 }
 
-func NewHandler(store *Store) *Handler {
+type Handler struct {
+	store seatStore
+}
+
+func NewHandler(store seatStore) *Handler {
 	return &Handler{store: store}
 }
 

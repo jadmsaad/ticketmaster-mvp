@@ -2,17 +2,25 @@
 package event
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"ticketmaster-mvp/internal/httpx"
 )
 
-type Handler struct {
-	store *Store
+// eventStore is what the handler needs from the store. *Store satisfies it in
+// production; tests pass a fake.
+type eventStore interface {
+	ListEvents(ctx context.Context) ([]Event, error)
+	GetEvent(ctx context.Context, id int64) (Event, error)
 }
 
-func NewHandler(store *Store) *Handler {
+type Handler struct {
+	store eventStore
+}
+
+func NewHandler(store eventStore) *Handler {
 	return &Handler{store: store}
 }
 

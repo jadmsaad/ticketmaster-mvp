@@ -1,16 +1,20 @@
 # Ticketmaster MVP: Plan
 
-Last updated: 2026-11-02
+Last updated: 2026-11-14
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 1 is nearly done. The service split and audit fixes are committed. Next step: the audit follow-ups (CI, linter, README, handler tests), then plan Epic 2.
+**Current status:** Epic 1 is nearly done. The service split and audit fixes are committed. CI is committed. Handler tests are done (ADR 9). Next step: the README, then plan Epic 2. AI lessons 1–2 interleave from here.
 
 ## How we work
 
 - The plan is split into epics. An epic is broken into tasks only when we start it.
-- Work one task at a time: plan it together, Claude writes the code, then review the result together.
-- Don't start the next task until its approach has been agreed.
+- **Epic:** design the overall approach together, with a short scope: goal, constraints, pass lines, and what we're not doing.
+- **Task:** Claude breaks it into decision steps. Each step is one real decision with a genuine trade-off, shown with code sketches. The user decides and explains why first, then Claude gives its view. Obvious defaults are stated in one line rather than made into steps.
+- **Code:** once every decision is made, Claude writes all the code, then lists any small decisions it made while coding.
+- **Format:** diagrams for systems and flows, code snippets with a linked file name, concise text.
+- **Recording decisions:** decisions that are hard to reverse or architectural get a short ADR in `docs/adr/NNNN-title.md` (Context, Decision with rejected options, Consequences, "Reopen if"), listed in `docs/adr/README.md`. Smaller task decisions go in the commit or PR description. The README will get a "Key decisions" section that links to the ADRs and includes the measured numbers.
+- **Pacing:** Ticketmaster work and the AI lessons in `~/ai-dev-learning` are interleaved, and Ticketmaster is the project the lessons are applied to.
 - Before each experiment, the user predicts the outcome. Measure, then compare.
 - At the end of each session, update the status, epics, and session log in this file.
 
@@ -79,7 +83,9 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 - [x] Split into `event-api` (:8081) and `booking-api` (:8082) in a monorepo with per-service folders (`services/<name>/{cmd,internal,migrations}`). Each service has its own schema and database user, migrations run as one-off jobs, and the seat map moved to booking.
 - [x] Audit fixes for load testing: explicit pool size (`DB_MAX_CONNS`, default 20), server timeouts, request logging with request IDs, and Prometheus `/metrics` (request latency by route, connection pool stats).
 - [x] CI (GitHub Actions, on every PR and push to `main`): lint, tests with `-race` against Postgres, build, `go mod tidy`, `sqlc diff`, govulncheck, and Docker builds. golangci-lint v2 config in `.golangci.yml`. `make ci` runs the same checks locally. Won't run until the repo is pushed to GitHub.
-- [ ] Audit follow-ups: README, HTTP handler tests with small store interfaces.
+- [x] Handler tests: each handler declares a small store interface, tests use function-field fakes, requests go through the real routes, and bodies are compared as JSON (ADR 9). Shared helpers are in `internal/httpx/httpxtest`.
+- [ ] README.
+- [ ] Backfill ADRs 1–8 for decisions already made: Go; two services; a schema and database user per service; no cross-service foreign key; sqlc instead of an ORM; migrations as one-off jobs; no local gateway (ALB on AWS); apps run natively with only the database in Docker.
 - [ ] Review together, then close the epic.
 
 ### Epic 2: Naive booking
@@ -109,6 +115,48 @@ Admit users fairly during an on-sale surge.
 ### Epic 10: Observability stack (end game)
 The services already expose Prometheus `/metrics`. Add something that scrapes and stores them: Prometheus and Grafana in Docker Compose locally, and an ADOT collector sidecar pushing to Amazon Managed Prometheus or CloudWatch on AWS. Until then, load tests rely on k6's client-side numbers, logs, and `curl /metrics`. Leaning towards switching to OpenTelemetry for metrics and traces here (the metrics code lives in `internal/httpx/middleware.go` and `internal/postgres/pool.go`). Pull/scrape is preferred over push. Decide all of this when the epic starts.
 
+## AI extensions
+
+Added on 2026-11-09. On 2026-11-14 we decided to interleave these with the epics instead of leaving them until the end: each one starts as soon as the epic it depends on is done, and the AI lessons in `~/ai-dev-learning` are applied to them. Each extension is broken into tasks only when we start it, like an epic.
+
+Each one follows the light version of the AI project approach in `~/ai-dev-learning/start-here.md`:
+
+- Write a one-page scope first, including why AI makes sense for it.
+- Build a small labelled test set, and set pass lines before writing any code.
+- Keep prompts in versioned files, and log every model call: model, prompt version, tokens, cost, latency, and errors.
+- Rerun the test set whenever a prompt or model changes.
+- The service code stays in Go, using an official provider SDK. Evaluation scripts may be in Python.
+
+### AI 1: Natural-language search
+
+Turn a query like "jazz this weekend under $50 near downtown" into structured filters, then run them through the real event search. The model only produces filters, so it can't invent events, prices, or availability.
+
+- **When:** after Epic 3. The filters run as a Postgres query in `event-api` at first. Epic 8 later swaps in Elasticsearch behind the same filter type, without changing the AI part.
+- **Lessons first:** lessons 1–2 (purpose, scoping) are applied to this feature.
+- **Learn:** structured output, tool calling, guarding against invented or invalid filters.
+- **Test set:** labelled queries, each with the filters it should produce, scored for exact match per filter.
+
+### AI 2: Support agent
+
+Handle requests like "refund my ticket for Friday" with tools that look up bookings, cancel them, and issue Stripe refunds.
+
+- **Builds on:** Epic 6.
+- **Learn:** agents, tool use, guardrails, limits on steps and cost, human approval before risky actions such as refunds.
+- **Test set:** scripted support requests, measured on whether each is completed correctly and whether any unsafe action was attempted.
+
+### AI 3: Venue policy Q&A (optional)
+
+Answer questions like "Can I bring a bag?" from venue policy documents, and say so when the documents don't cover it.
+
+- **Learn:** RAG: chunking, embeddings, retrieval, and answering only from the documents.
+- **Test set:** questions with known answers, scored separately on whether retrieval found the right passage and whether the answer was correct.
+
+AI features that were considered and rejected:
+
+- **Q&A over structured event data** (date, price, seats left): an event page already shows it, and a model could misstate prices or availability.
+- **Seat recommendations:** an ordinary algorithm handles this.
+- **Bot detection:** a classical ML problem rather than an LLM one.
+
 ## AWS cost rules
 
 - The user creates the AWS account and enters payment details.
@@ -126,3 +174,15 @@ The services already expose Prometheus `/metrics`. Add something that scrapes an
 - During review: moved shared HTTP helpers into `internal/httpx`, and switched database access to sqlc. The user knows SQL and wants production Go patterns, not basics.
 - Restructured the plan into epics. Decided to split into `event-api` and `booking-api` so booking can scale on its own, with no local gateway and an ALB on AWS.
 - Built the split as a monorepo: one Postgres server with a schema and database user per service, no cross-service foreign key (so booking can later move to its own database or be sharded by `event_id`), and shared `internal/service`, `internal/postgres`, and `internal/testdb` packages.
+
+### 2026-11-09
+
+- Added an "AI extensions" section after the epics: natural-language search, a support agent, and optional venue policy Q&A. Recorded the AI ideas that were rejected, and why.
+
+### 2026-11-14
+
+- Walked through `ci.yml` block by block, and discussed continuous deployment, canaries, reverts, and test layers.
+- Changed how we work to decision steps: design each epic together, break each task into real trade-off decisions the user makes first, and Claude writes all the code afterwards. Diagrams for systems and flows.
+- Decided to interleave the AI work: AI 1 (natural-language search) moves to right after Epic 3, using Postgres filters until Epic 8.
+- Chose ADRs for recording decisions (over a single decision log or Marina's per-change folders). Backfilling the 8 existing decisions is in the Epic 1 checklist.
+- Designed the handler tests in four decision steps: an interface plus a fake, function-field fakes, requests through the real routes, and bodies compared as JSON. Built them for both services, and recorded the reasoning in ADR 9. Checked that they fail on a renamed JSON field and on a mismatched path parameter.
