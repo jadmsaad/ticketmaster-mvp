@@ -8,17 +8,17 @@ overrides:
 sql:
   - engine: postgresql
     schema: services/event/migrations
-    queries: services/event/internal/event/queries.sql
+    queries: services/event/internal/postgres/queries.sql
     gen:
       go:
         package: eventdb
-        out: services/event/internal/event/eventdb
+        out: services/event/internal/postgres/eventdb
         sql_package: pgx/v5
   - engine: postgresql
     schema: services/booking/migrations
-    queries: services/booking/internal/booking/queries.sql
+    queries: services/booking/internal/postgres/queries.sql
     gen:
       go:
         package: bookingdb
-        out: services/booking/internal/booking/bookingdb
+        out: services/booking/internal/postgres/bookingdb
         sql_package: pgx/v5

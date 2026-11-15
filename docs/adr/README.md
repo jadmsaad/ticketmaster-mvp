@@ -13,3 +13,4 @@ An ADR records a decision that is hard to reverse or that shapes the architectur
 | 7 | [No local gateway; an ALB routes by path on AWS](0007-no-local-gateway.md) | Accepted |
 | 8 | [Apps run natively in development, with only infrastructure in Docker](0008-native-apps-docker-db.md) | Accepted |
 | 9 | [Handler tests: fakes behind consumer-side interfaces, sent through the mux](0009-handler-tests.md) | Accepted |
+| 10 | [Ports-and-adapters package layout inside each service](0010-ports-and-adapters-layout.md) | Accepted |

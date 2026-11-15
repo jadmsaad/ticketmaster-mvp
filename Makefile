@@ -11,6 +11,7 @@ EVENT_DB    := $(subst %s,event_api:event_api,$(PG))
 BOOKING_DB  := $(subst %s,booking_api:booking_api,$(PG))
 ADMIN_DB    := $(subst %s,ticketmaster:ticketmaster,$(PG))
 TEST_DB     := postgres://ticketmaster:ticketmaster@localhost:5432/postgres?sslmode=disable
+TEST_REDIS  := redis://localhost:6379/15
 
 EVENT_CMD   := ./services/event/cmd/event-api
 BOOKING_CMD := ./services/booking/cmd/booking-api
@@ -23,8 +24,8 @@ GOVULNCHECK   := go run golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
 setup: db migrate seed ## Start Postgres, migrate, and seed
 
-db: ## Start Postgres and wait until it's healthy
-	docker compose up -d --wait db
+db: ## Start Postgres and Redis, and wait until they're healthy
+	docker compose up -d --wait db redis
 
 migrate: ## Apply both services' migrations
 	DATABASE_URL=$(EVENT_DB) go run $(EVENT_CMD) migrate
@@ -42,8 +43,8 @@ run-event: ## Run event-api on :8081
 run-booking: ## Run booking-api on :8082
 	DATABASE_URL=$(BOOKING_DB) ADDR=:8082 go run $(BOOKING_CMD)
 
-test: ## Run all tests against the local Postgres, with the race detector
-	TEST_POSTGRES_URL=$(TEST_DB) go test -race -p 1 ./...
+test: ## Run all tests against the local Postgres and Redis, with the race detector
+	TEST_POSTGRES_URL=$(TEST_DB) TEST_REDIS_URL=$(TEST_REDIS) go test -race -p 1 ./...
 
 lint: ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...

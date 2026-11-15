@@ -39,14 +39,24 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 15
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
     env:
       TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      TEST_REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # Integration tests share one Postgres server, so packages run one at a time.
+      # Integration tests share one Postgres and one Redis, so packages run one at a time.
       - run: go test -race -p 1 ./...
 
   checks:

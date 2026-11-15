@@ -4,7 +4,7 @@ Last updated: 2026-11-14
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 1 is done (closed 2026-11-14). Next step: plan Epic 2 (naive booking) together. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
+**Current status:** Epic 1 is done (closed 2026-11-14). Next step: plan Epic 2 (booking with database protection, plus a load-test harness) together. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
 
 ## How we work
 
@@ -24,7 +24,7 @@ Last updated: 2026-11-14
 - [x] **Service layout:** two services, `event-api` and `booking-api`, so booking can scale on its own. Chosen by the user on 2026-11-02, replacing the earlier choice of one service.
 - [x] **Gateway:** none locally, because each service runs on its own port. On AWS, an ALB routes by path, and API Gateway is added only for rate limiting. Chosen by the user on 2026-11-02.
 - [x] **Database access:** sqlc, generating typed Go from hand-written SQL. No ORM, because concurrency control needs exact SQL. Chosen by the user on 2026-11-02.
-- [x] **Cloud:** AWS, deployed after Epic 4, chosen by the user on 2026-11-02.
+- [x] **Cloud:** AWS, deployed after the booking flow (Epic 2), chosen by the user on 2026-11-02.
 
 ## Development environment
 
@@ -89,14 +89,31 @@ Each service owns its tables in its own Postgres schema and connects as its own 
 - [x] Reviewed together and closed. Before closing, govulncheck flagged GO-2026-6859 in the Go 1.27.3 standard library, so `go.mod` moved to Go 1.27.4.
 - Deferred to later epics: separate liveness and readiness checks (Epic 5), `/v1` API versioning, a slimmer image, moving tool dependencies out of `go.mod`, and pushing to GitHub so CI runs (plus a scheduled govulncheck run).
 
-### Epic 2: Naive booking
-No protection, on purpose. Race 1,000 concurrent users for the same seats and count the double-bookings.
+### Epic 2: Booking with holds and database protection, plus a load-test harness
+Two-step booking:
+- **Reserve:** hold a seat with a TTL while the buyer pays.
+- **Complete:** turn a held seat into a booking.
 
-### Epic 3: Database protection
-Add the Postgres guarantee, confirm double-bookings drop to zero, and measure the performance cost.
+A unique constraint on `bookings.seat_id` is the final say (Step 1, decided 2026-11-14), because a hold can expire mid-payment or be lost in a failover. A concurrency test proves the protection works, because it fails if the protection is removed. Build the k6 harness, reused in Epics 5 and 7, and measure the flow under 1,000 concurrent buyers.
 
-### Epic 4: Redis holds
-Add holds with a TTL. Compare Postgres load and latency against Epic 3.
+Epic design decisions (2026-11-14/15), to be recorded together in ADR 11 when built:
+1. ✅ **Database guarantee:** `UNIQUE (seat_id)` on `bookings`, with error 23505 mapped to "seat already booked". It's the backstop when a hold expires, is lost, or a code path skips the check.
+2. ✅ **Holds live in Redis** (`SET NX EX`), because holds exist to absorb the on-sale spike in front of Postgres. The TTL also means no cleanup job.
+3. ✅ **Service layer:** `handler → service → store (Postgres) + holds (Redis)`. Handler tests fake the service.
+4. ✅ **The API is an order resource with a lifecycle:** `POST /orders` (status held, with a TTL), `POST /orders/{id}/confirm` (status confirmed), and expiry. The order ID is an app-generated UUIDv7 that doubles as the fencing token. Held orders live only in Redis; only confirmed bookings reach Postgres (`bookings.order_id UNIQUE`). An expired or unknown order returns 404. `X-User-ID` is the stand-in for auth.
+5. ✅ **Load scenarios:** one-seat, uniform, and skewed seat choice, all arriving as a spike, plus skewed arriving as a ramp. Each run records double-bookings (must be 0), p50/p95/p99, error and 409 rates, and pool waits. The user predicts before each run.
+
+Tasks:
+- [x] T1: Redis in Compose and CI, plus `redis.HoldStore`, tested against real Redis. Also restructured both services into ports and adapters (ADR 10): `internal/{<svc>, postgres, redis, httpapi}`. Wiring Redis into `booking-api` happens in T3.
+- [ ] T2: Booking migration, service (`Reserve`, `Confirm`), and a concurrency test proving one booking per seat.
+- [ ] T3: HTTP endpoints for orders, with handler tests (ADR 9 pattern, faking the service).
+- [ ] T4: k6 harness and `make loadtest`, predictions, runs, `docs/experiments/02-booking.md`, and ADR 11.
+
+### Epic 3: merged into Epic 2
+On 2026-11-14 we decided not to build an unprotected version on purpose. We already know it races, and following Marina's principle, experiments are kept for real unknowns. The race shows up as the test that the protection must pass.
+
+### Epic 4: merged into Epic 2
+On 2026-11-15 we decided to build holds as part of the booking flow rather than add them later. The trade-off is that there's no before/after measurement of how much holds help.
 
 ### Epic 5: AWS deployment
 Set up the billing alert, write the Terraform, deploy both services, and repeat the load test. See "AWS cost rules."
@@ -132,7 +149,7 @@ Each one follows the light version of the AI project approach in `~/ai-dev-learn
 
 Turn a query like "jazz this weekend under $50 near downtown" into structured filters, then run them through the real event search. The model only produces filters, so it can't invent events, prices, or availability.
 
-- **When:** after Epic 3. The filters run as a Postgres query in `event-api` at first. Epic 8 later swaps in Elasticsearch behind the same filter type, without changing the AI part.
+- **When:** after Epic 2. The filters run as a Postgres query in `event-api` at first. Epic 8 later swaps in Elasticsearch behind the same filter type, without changing the AI part.
 - **Lessons first:** lessons 1–2 (purpose, scoping) are applied to this feature.
 - **Learn:** structured output, tool calling, guarding against invented or invalid filters.
 - **Test set:** labelled queries, each with the filters it should produce, scored for exact match per filter.
@@ -189,3 +206,4 @@ AI features that were considered and rejected:
 - Designed the handler tests in four decision steps: an interface plus a fake, function-field fakes, requests through the real routes, and bodies compared as JSON. Built them for both services, and recorded the reasoning in ADR 9. Checked that they fail on a renamed JSON field and on a mismatched path parameter.
 - Wrote ADRs 1–8 and the README, which the user reviewed and committed.
 - Closed Epic 1 after a full green `make ci` run. Moved to Go 1.27.4 for GO-2026-6859.
+- Merged Epics 2 and 3. The user questioned building a naive version on purpose: its outcome is already known, so it isn't a real experiment. Epic 2 now builds booking correctly and adds a concurrency test and a k6 harness. AI 1 now follows Epic 2.

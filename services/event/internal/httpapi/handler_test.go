@@ -1,4 +1,4 @@
-package event
+package httpapi
 
 import (
 	"context"
@@ -8,23 +8,24 @@ import (
 	"time"
 
 	"ticketmaster-mvp/internal/httpx/httpxtest"
+	"ticketmaster-mvp/services/event/internal/event"
 )
 
 // fakeStore lets each test plug in the store behaviour it needs. A method
 // whose function isn't set panics, so unexpected store calls fail the test.
 type fakeStore struct {
-	listEventsFn func(ctx context.Context) ([]Event, error)
-	getEventFn   func(ctx context.Context, id int64) (Event, error)
+	listEventsFn func(ctx context.Context) ([]event.Event, error)
+	getEventFn   func(ctx context.Context, id int64) (event.Event, error)
 }
 
-func (f fakeStore) ListEvents(ctx context.Context) ([]Event, error) {
+func (f fakeStore) ListEvents(ctx context.Context) ([]event.Event, error) {
 	if f.listEventsFn == nil {
 		panic("fakeStore: unexpected call to ListEvents")
 	}
 	return f.listEventsFn(ctx)
 }
 
-func (f fakeStore) GetEvent(ctx context.Context, id int64) (Event, error) {
+func (f fakeStore) GetEvent(ctx context.Context, id int64) (event.Event, error) {
 	if f.getEventFn == nil {
 		panic("fakeStore: unexpected call to GetEvent")
 	}
@@ -32,7 +33,7 @@ func (f fakeStore) GetEvent(ctx context.Context, id int64) (Event, error) {
 }
 
 var (
-	testEvent = Event{
+	testEvent = event.Event{
 		ID:       1,
 		Name:     "The Goroutines: Live",
 		Venue:    "Demo Arena",
@@ -44,13 +45,13 @@ var (
 func TestHandlerListEvents(t *testing.T) {
 	tests := []struct {
 		name         string
-		listEventsFn func(context.Context) ([]Event, error)
+		listEventsFn func(context.Context) ([]event.Event, error)
 		wantStatus   int
 		wantBody     string
 	}{
 		{
 			name:         "lists events",
-			listEventsFn: func(context.Context) ([]Event, error) { return []Event{testEvent}, nil },
+			listEventsFn: func(context.Context) ([]event.Event, error) { return []event.Event{testEvent}, nil },
 			wantStatus:   http.StatusOK,
 			wantBody: `[{
 				"id":        1,
@@ -61,7 +62,7 @@ func TestHandlerListEvents(t *testing.T) {
 		},
 		{
 			name:         "store fails",
-			listEventsFn: func(context.Context) ([]Event, error) { return nil, errDB },
+			listEventsFn: func(context.Context) ([]event.Event, error) { return nil, errDB },
 			wantStatus:   http.StatusInternalServerError,
 			wantBody:     `{"error": "internal server error"}`,
 		},
@@ -84,7 +85,7 @@ func TestHandlerGetEvent(t *testing.T) {
 	tests := []struct {
 		name       string
 		path       string
-		getEventFn func(context.Context, int64) (Event, error) // nil: the store must not be called
+		getEventFn func(context.Context, int64) (event.Event, error) // nil: the store must not be called
 		wantStatus int
 		wantBody   string
 	}{
@@ -103,7 +104,7 @@ func TestHandlerGetEvent(t *testing.T) {
 		{
 			name:       "not found",
 			path:       "/events/1",
-			getEventFn: fails(ErrNotFound),
+			getEventFn: fails(event.ErrNotFound),
 			wantStatus: http.StatusNotFound,
 			wantBody:   `{"error": "event not found"}`,
 		},
@@ -133,7 +134,7 @@ func TestHandlerGetEvent(t *testing.T) {
 			var gotID int64
 			if tc.getEventFn != nil {
 				// Record the id the handler passes, then answer as the row says.
-				fake.getEventFn = func(ctx context.Context, id int64) (Event, error) {
+				fake.getEventFn = func(ctx context.Context, id int64) (event.Event, error) {
 					gotID = id
 					return tc.getEventFn(ctx, id)
 				}
@@ -153,11 +154,11 @@ func TestHandlerGetEvent(t *testing.T) {
 }
 
 // returns is a getEventFn that always finds e.
-func returns(e Event) func(context.Context, int64) (Event, error) {
-	return func(context.Context, int64) (Event, error) { return e, nil }
+func returns(e event.Event) func(context.Context, int64) (event.Event, error) {
+	return func(context.Context, int64) (event.Event, error) { return e, nil }
 }
 
 // fails is a getEventFn that always fails with err.
-func fails(err error) func(context.Context, int64) (Event, error) {
-	return func(context.Context, int64) (Event, error) { return Event{}, err }
+func fails(err error) func(context.Context, int64) (event.Event, error) {
+	return func(context.Context, int64) (event.Event, error) { return event.Event{}, err }
 }

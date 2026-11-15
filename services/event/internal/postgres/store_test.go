@@ -1,4 +1,4 @@
-package event
+package postgres
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ticketmaster-mvp/internal/testdb"
+	"ticketmaster-mvp/services/event/internal/event"
 	"ticketmaster-mvp/services/event/migrations"
 )
 
@@ -29,12 +30,12 @@ func TestGetEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// == also compares the time zone, so this checks StartsAt is UTC.
-	want := Event{ID: id, Name: "Test", Venue: "Hall", StartsAt: startsAt}
+	want := event.Event{ID: id, Name: "Test", Venue: "Hall", StartsAt: startsAt}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 
-	if _, err := store.GetEvent(ctx, id+1); !errors.Is(err, ErrNotFound) {
+	if _, err := store.GetEvent(ctx, id+1); !errors.Is(err, event.ErrNotFound) {
 		t.Fatalf("unknown event: got error %v, want ErrNotFound", err)
 	}
 }

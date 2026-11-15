@@ -1,4 +1,4 @@
-package booking
+package postgres
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"ticketmaster-mvp/internal/testdb"
+	"ticketmaster-mvp/services/booking/internal/booking"
 	"ticketmaster-mvp/services/booking/migrations"
 )
 
@@ -51,7 +52,7 @@ func TestListSeats(t *testing.T) {
 func TestListSeatsNoInventory(t *testing.T) {
 	store := NewStore(testdb.New(t, "booking", migrations.FS))
 	_, err := store.ListSeats(context.Background(), 999)
-	if !errors.Is(err, ErrNoInventory) {
+	if !errors.Is(err, booking.ErrNoInventory) {
 		t.Fatalf("got error %v, want ErrNoInventory", err)
 	}
 }

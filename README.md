@@ -1,8 +1,8 @@
 # Ticketmaster MVP
 
-A working backend for selling assigned seats, built in Go. The hard part of ticketing is the on-sale spike: millions of buyers going after the same few seats at the same moment. This project builds the system up in stages and measures each one. First it double-books seats on purpose, then adds database guarantees, Redis holds, and a waiting room, and records what each one costs and fixes.
+A working backend for selling assigned seats, built in Go. The hard part of ticketing is the on-sale spike: millions of buyers going after the same few seats at the same moment. This project builds the system up in stages: database guarantees, then Redis holds, then a waiting room. Each stage is load-tested, and the results record what it costs and what it fixes.
 
-**Status:** Epic 1 (foundation) is done: two services, schemas, migrations, tests, and CI. Next is Epic 2, which races 1,000 concurrent buyers against a booking endpoint that has no protection.
+**Status:** Epic 1 (foundation) is done: two services, schemas, migrations, tests, and CI. Next is Epic 2: reserve-then-complete booking, with time-limited seat holds and Postgres guaranteeing each seat is sold once, plus a load-test harness with 1,000 concurrent buyers.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ Each decision has an ADR with the options we rejected and what would make us rev
 - **Each service owns its data** ([ADR 3](docs/adr/0003-schema-and-user-per-service.md), [ADR 4](docs/adr/0004-no-cross-service-foreign-keys.md)). Each service has its own schema and database user, and there are no foreign keys across services, so booking can move to its own database or be sharded by `event_id`.
 - **Hand-written SQL with generated Go (sqlc), not an ORM** ([ADR 5](docs/adr/0005-sqlc.md)). Concurrency control needs exact control over the SQL.
 - **Migrations run as one-off jobs** ([ADR 6](docs/adr/0006-migrations-as-one-off-jobs.md)). Twenty instances starting at once never race to change the schema.
-- **Postgres has the final say on who owns a seat.** Redis holds (Epic 4) keep load off the database but can't guarantee correctness on their own, because a lock can expire or be lost in a failover.
+- **Postgres has the final say on who owns a seat.** Seat holds with a time limit keep load off the database but can't guarantee correctness on their own, because a lock can expire or be lost in a failover.
 
 Measured results from the load tests will be added here as each epic lands.
 
@@ -67,15 +67,15 @@ To run everything in containers, the way it runs in production, use `make up-all
 
 ```
 services/
-  event/      cmd/event-api   internal/event (handler, store, SQL)    migrations/
-  booking/    cmd/booking-api internal/booking (handler, store, SQL)  migrations/
-internal/     code shared by both services: httpx, postgres, service, testdb
+  event/      cmd/event-api      internal/{event, postgres, httpapi}          migrations/
+  booking/    cmd/booking-api    internal/{booking, postgres, redis, httpapi} migrations/
+internal/     code shared by both services: httpx, postgres, service, testdb, testredis
 cmd/seed/     dev-only seed tool
 deploy/       Postgres roles and schemas
 docs/adr/     architecture decision records
 ```
 
-Go's `internal/` rule stops one service importing the other's code. That boundary is checked at compile time.
+Inside each service, the domain package (`event`, `booking`) holds the types and rules and imports no infrastructure. Each adapter (`postgres`, `redis`, `httpapi`) depends on the domain, never the reverse ([ADR 10](docs/adr/0010-ports-and-adapters-layout.md)). Go's `internal/` rule also stops one service importing the other's code. Both boundaries are checked at compile time.
 
 ## Testing
 
@@ -88,9 +88,7 @@ Go's `internal/` rule stops one service importing the other's code. That boundar
 | Epic | What it shows |
 |---|---|
 | 1. Foundation | Services, schemas, migrations, tests, CI ✅ |
-| 2. Naive booking | No protection: count the double-bookings under 1,000 concurrent buyers |
-| 3. Database protection | A Postgres constraint takes double-bookings to zero, and we measure what it costs |
-| 4. Redis holds | Holds with a time limit, compared against Epic 3 for database load and latency |
+| 2. Booking | Reserve a seat with a time-limited hold, then complete. Postgres guarantees one booking per seat, a concurrency test proves it, and a k6 harness measures the flow |
 | 5. AWS | Terraform, ECS Fargate, RDS, ALB, and the load test repeated in the cloud |
 | 6. Payments | Stripe checkout, webhooks that are safe to process twice, refunds for payments that arrive late |
 | 7. Failure testing | Kill Redis or a service mid-checkout, and fail over RDS |

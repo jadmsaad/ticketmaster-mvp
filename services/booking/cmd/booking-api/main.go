@@ -7,7 +7,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ticketmaster-mvp/internal/service"
-	"ticketmaster-mvp/services/booking/internal/booking"
+	"ticketmaster-mvp/services/booking/internal/httpapi"
+	"ticketmaster-mvp/services/booking/internal/postgres"
 	"ticketmaster-mvp/services/booking/migrations"
 )
 
@@ -16,7 +17,7 @@ func main() {
 		Name:       "booking-api",
 		Migrations: migrations.FS,
 		Routes: func(mux *http.ServeMux, pool *pgxpool.Pool) {
-			booking.NewHandler(booking.NewStore(pool)).Register(mux)
+			httpapi.NewHandler(postgres.NewStore(pool)).Register(mux)
 		},
 	})
 }

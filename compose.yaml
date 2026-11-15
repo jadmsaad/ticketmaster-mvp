@@ -1,7 +1,7 @@
 # Local stack. Passwords are for this local database only, and ports are only
 # reachable from this Mac.
 #
-#   docker compose up -d                  Postgres only (day-to-day dev; run apps with make)
+#   docker compose up -d                  Postgres and Redis only (day-to-day dev; run apps with make)
 #   docker compose --profile apps up -d   everything in containers, as in production
 #
 # Startup order with the apps profile:
@@ -47,6 +47,17 @@ services:
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ticketmaster -d ticketmaster"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Seat holds (booking). Holds are temporary by design, so no volume.
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 3s
       retries: 15

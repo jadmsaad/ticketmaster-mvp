@@ -1,5 +1,5 @@
-// Package booking serves seat inventory and bookings.
-package booking
+// Package httpapi is booking's HTTP adapter: routes and handlers.
+package httpapi
 
 import (
 	"context"
@@ -7,12 +7,13 @@ import (
 	"net/http"
 
 	"ticketmaster-mvp/internal/httpx"
+	"ticketmaster-mvp/services/booking/internal/booking"
 )
 
-// seatStore is what the handler needs from the store. *Store satisfies it in
+// seatStore is what the handler needs from the store. postgres.Store satisfies it in
 // production; tests pass a fake.
 type seatStore interface {
-	ListSeats(ctx context.Context, eventID int64) ([]Seat, error)
+	ListSeats(ctx context.Context, eventID int64) ([]booking.Seat, error)
 }
 
 type Handler struct {
@@ -35,7 +36,7 @@ func (h *Handler) listSeats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	seats, err := h.store.ListSeats(r.Context(), eventID)
-	if errors.Is(err, ErrNoInventory) {
+	if errors.Is(err, booking.ErrNoInventory) {
 		httpx.WriteError(w, http.StatusNotFound, "no seats for this event")
 		return
 	}

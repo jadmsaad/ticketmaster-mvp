@@ -1,4 +1,4 @@
-package booking
+package httpapi
 
 import (
 	"context"
@@ -7,15 +7,16 @@ import (
 	"testing"
 
 	"ticketmaster-mvp/internal/httpx/httpxtest"
+	"ticketmaster-mvp/services/booking/internal/booking"
 )
 
 // fakeStore lets each test plug in the store behaviour it needs. A method
 // whose function isn't set panics, so unexpected store calls fail the test.
 type fakeStore struct {
-	listSeatsFn func(ctx context.Context, eventID int64) ([]Seat, error)
+	listSeatsFn func(ctx context.Context, eventID int64) ([]booking.Seat, error)
 }
 
-func (f fakeStore) ListSeats(ctx context.Context, eventID int64) ([]Seat, error) {
+func (f fakeStore) ListSeats(ctx context.Context, eventID int64) ([]booking.Seat, error) {
 	if f.listSeatsFn == nil {
 		panic("fakeStore: unexpected call to ListSeats")
 	}
@@ -23,21 +24,21 @@ func (f fakeStore) ListSeats(ctx context.Context, eventID int64) ([]Seat, error)
 }
 
 func TestHandlerListSeats(t *testing.T) {
-	seats := []Seat{
+	seats := []booking.Seat{
 		{ID: 1, Section: "A", Row: "1", Number: 1, PriceCents: 5000, Available: true},
 		{ID: 2, Section: "A", Row: "1", Number: 2, PriceCents: 5000, Available: false},
 	}
 	tests := []struct {
 		name        string
 		path        string
-		listSeatsFn func(context.Context, int64) ([]Seat, error) // nil: the store must not be called
+		listSeatsFn func(context.Context, int64) ([]booking.Seat, error) // nil: the store must not be called
 		wantStatus  int
 		wantBody    string
 	}{
 		{
 			name:        "seat map",
 			path:        "/events/7/seats",
-			listSeatsFn: func(context.Context, int64) ([]Seat, error) { return seats, nil },
+			listSeatsFn: func(context.Context, int64) ([]booking.Seat, error) { return seats, nil },
 			wantStatus:  http.StatusOK,
 			wantBody: `[
 				{"id": 1, "section": "A", "row": "1", "number": 1, "price_cents": 5000, "available": true},
@@ -47,14 +48,14 @@ func TestHandlerListSeats(t *testing.T) {
 		{
 			name:        "no inventory",
 			path:        "/events/7/seats",
-			listSeatsFn: func(context.Context, int64) ([]Seat, error) { return nil, ErrNoInventory },
+			listSeatsFn: func(context.Context, int64) ([]booking.Seat, error) { return nil, booking.ErrNoInventory },
 			wantStatus:  http.StatusNotFound,
 			wantBody:    `{"error": "no seats for this event"}`,
 		},
 		{
 			name:        "store fails",
 			path:        "/events/7/seats",
-			listSeatsFn: func(context.Context, int64) ([]Seat, error) { return nil, errors.New("connection refused") },
+			listSeatsFn: func(context.Context, int64) ([]booking.Seat, error) { return nil, errors.New("connection refused") },
 			wantStatus:  http.StatusInternalServerError,
 			wantBody:    `{"error": "internal server error"}`,
 		},
@@ -71,7 +72,7 @@ func TestHandlerListSeats(t *testing.T) {
 			var gotID int64
 			if tc.listSeatsFn != nil {
 				// Record the event id the handler passes, then answer as the row says.
-				fake.listSeatsFn = func(ctx context.Context, eventID int64) ([]Seat, error) {
+				fake.listSeatsFn = func(ctx context.Context, eventID int64) ([]booking.Seat, error) {
 					gotID = eventID
 					return tc.listSeatsFn(ctx, eventID)
 				}

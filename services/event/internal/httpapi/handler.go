@@ -1,5 +1,5 @@
-// Package event serves the event catalog.
-package event
+// Package httpapi is event's HTTP adapter: routes and handlers.
+package httpapi
 
 import (
 	"context"
@@ -7,13 +7,14 @@ import (
 	"net/http"
 
 	"ticketmaster-mvp/internal/httpx"
+	"ticketmaster-mvp/services/event/internal/event"
 )
 
-// eventStore is what the handler needs from the store. *Store satisfies it in
+// eventStore is what the handler needs from the store. postgres.Store satisfies it in
 // production; tests pass a fake.
 type eventStore interface {
-	ListEvents(ctx context.Context) ([]Event, error)
-	GetEvent(ctx context.Context, id int64) (Event, error)
+	ListEvents(ctx context.Context) ([]event.Event, error)
+	GetEvent(ctx context.Context, id int64) (event.Event, error)
 }
 
 type Handler struct {
@@ -45,8 +46,8 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid event id")
 		return
 	}
-	event, err := h.store.GetEvent(r.Context(), id)
-	if errors.Is(err, ErrNotFound) {
+	ev, err := h.store.GetEvent(r.Context(), id)
+	if errors.Is(err, event.ErrNotFound) {
 		httpx.WriteError(w, http.StatusNotFound, "event not found")
 		return
 	}
@@ -54,5 +55,5 @@ func (h *Handler) getEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, event)
+	httpx.WriteJSON(w, http.StatusOK, ev)
 }
