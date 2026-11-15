@@ -13,6 +13,7 @@ Last updated: 2026-11-14
 - **Task:** Claude breaks it into decision steps. Each step is one real decision with a genuine trade-off, shown with code sketches. The user decides and explains why first, then Claude gives its view. Obvious defaults are stated in one line rather than made into steps.
 - **Code:** once every decision is made, Claude writes all the code, then lists any small decisions it made while coding.
 - **Format:** diagrams for systems and flows, code snippets with a linked file name, concise text.
+- **Shipping:** each task lands through its own branch and a squash-merged PR, with `main` protected and CI required, following Marina's style (chosen 2026-11-15). The PR body says why and lists the smaller decisions. CI also runs weekly, for new vulnerabilities.
 - **Recording decisions:** decisions that are hard to reverse or architectural get a short ADR in `docs/adr/NNNN-title.md` (Context, Decision with rejected options, Consequences, "Reopen if"), listed in `docs/adr/README.md`. Smaller task decisions go in the commit or PR description. The README will get a "Key decisions" section that links to the ADRs and includes the measured numbers.
 - **Pacing:** Ticketmaster work and the AI lessons in `~/ai-dev-learning` are interleaved, and Ticketmaster is the project the lessons are applied to.
 - Before each experiment, the user predicts the outcome. Measure, then compare.
