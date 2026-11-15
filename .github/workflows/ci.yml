@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly, so newly published vulnerabilities (govulncheck) show up even
+  # when nobody is pushing.
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
 
 # A newer push to the same branch cancels the run that's still going.
 concurrency:

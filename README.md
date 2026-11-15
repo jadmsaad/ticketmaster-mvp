@@ -1,5 +1,7 @@
 # Ticketmaster MVP
 
+[![CI](https://github.com/jadmsaad/ticketmaster-mvp/actions/workflows/ci.yml/badge.svg)](https://github.com/jadmsaad/ticketmaster-mvp/actions/workflows/ci.yml)
+
 A working backend for selling assigned seats, built in Go. The hard part of ticketing is the on-sale spike: millions of buyers going after the same few seats at the same moment. This project builds the system up in stages: database guarantees, then Redis holds, then a waiting room. Each stage is load-tested, and the results record what it costs and what it fixes.
 
 **Status:** Epic 1 (foundation) is done: two services, schemas, migrations, tests, and CI. Next is Epic 2: reserve-then-complete booking, with time-limited seat holds and Postgres guaranteeing each seat is sold once, plus a load-test harness with 1,000 concurrent buyers.
