@@ -34,8 +34,9 @@ migrate: ## Apply both services' migrations
 seed: ## Create sample data (no-op if it already exists)
 	DATABASE_URL=$(ADMIN_DB) go run ./cmd/seed
 
-reset: ## Wipe all data, including bookings, and re-seed
+reset: ## Wipe all data, including bookings and Redis seat state, and re-seed
 	DATABASE_URL=$(ADMIN_DB) go run ./cmd/seed -reset
+	docker compose exec -T redis redis-cli FLUSHDB
 
 run-event: ## Run event-api on :8081
 	DATABASE_URL=$(EVENT_DB) ADDR=:8081 go run $(EVENT_CMD)
