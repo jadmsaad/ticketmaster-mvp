@@ -14,3 +14,4 @@ An ADR records a decision that is hard to reverse or that shapes the architectur
 | 8 | [Apps run natively in development, with only infrastructure in Docker](0008-native-apps-docker-db.md) | Accepted |
 | 9 | [Handler tests: fakes behind consumer-side interfaces, sent through the mux](0009-handler-tests.md) | Accepted |
 | 10 | [Ports-and-adapters package layout inside each service](0010-ports-and-adapters-layout.md) | Accepted |
+| 11 | [Booking flow: Redis holds and seat state in front of a Postgres backstop](0011-booking-flow.md) | Accepted |

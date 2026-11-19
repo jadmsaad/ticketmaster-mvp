@@ -1,10 +1,10 @@
 # Ticketmaster MVP: Plan
 
-Last updated: 2026-11-14
+Last updated: 2026-11-15
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 1 is done (closed 2026-11-14). Next step: plan Epic 2 (booking with database protection, plus a load-test harness) together. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
+**Current status:** Epic 2 is in progress. The epic design is agreed (5 decisions below), and T1 (Redis holds plus the ports-and-adapters layout, ADR 10) is merged. Next step: T2's decision steps. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
 
 ## How we work
 
@@ -97,7 +97,7 @@ Two-step booking:
 
 A unique constraint on `bookings.seat_id` is the final say (Step 1, decided 2026-11-14), because a hold can expire mid-payment or be lost in a failover. A concurrency test proves the protection works, because it fails if the protection is removed. Build the k6 harness, reused in Epics 5 and 7, and measure the flow under 1,000 concurrent buyers.
 
-Epic design decisions (2026-11-14/15), to be recorded together in ADR 11 when built:
+Epic design decisions (2026-11-14/15), recorded in ADR 11:
 1. ✅ **Database guarantee:** `UNIQUE (seat_id)` on `bookings`, with error 23505 mapped to "seat already booked". It's the backstop when a hold expires, is lost, or a code path skips the check.
 2. ✅ **Holds live in Redis** (`SET NX EX`), because holds exist to absorb the on-sale spike in front of Postgres. The TTL also means no cleanup job.
 3. ✅ **Service layer:** `handler → service → store (Postgres) + holds (Redis)`. Handler tests fake the service.
@@ -106,9 +106,16 @@ Epic design decisions (2026-11-14/15), to be recorded together in ADR 11 when bu
 
 Tasks:
 - [x] T1: Redis in Compose and CI, plus `redis.HoldStore`, tested against real Redis. Also restructured both services into ports and adapters (ADR 10): `internal/{<svc>, postgres, redis, httpapi}`. Wiring Redis into `booking-api` happens in T3.
-- [ ] T2: Booking migration, service (`Reserve`, `Confirm`), and a concurrency test proving one booking per seat.
-- [ ] T3: HTTP endpoints for orders, with handler tests (ADR 9 pattern, faking the service).
-- [ ] T4: k6 harness and `make loadtest`, predictions, runs, `docs/experiments/02-booking.md`, and ADR 11.
+- [ ] T2: The seat-state read model in Redis (free, held, or sold per seat), plus the booking migration, the service (`Reserve`, `Confirm`), and concurrency tests.
+  - ✅ Step 1, what `Reserve` checks: seat state in Redis (option C), never Postgres. Sold seats are common during an on-sale, not an edge case, and the seat map needs this read model anyway. Seats are loaded into Redis when an event is published (the seed for now), rebuilt from Postgres if the state goes missing, and expire after the event (`EXPIREAT starts_at + 1 day`). The unique constraint is still the backstop if a "sold" marker is lost.
+  - ✅ Step 2, encoding: a 1-bit sold bitmap `seats:sold:{event:N}` at position `seats.idx` (0…N within each event), plus a sorted set of live holds `holds:{event:N}` (member = seat idx, score = expiry in ms). A 2-bit held state was rejected because TTL expiry can't reset bits, so abandoned holds would show as held forever, and finding expired bits means checking every held seat. The sorted set is effectively an index on expiry: reads use `ZRANGEBYSCORE (now +inf`, so a seat is available the instant its hold expires, and the reserve script prunes with `ZREMRANGEBYSCORE -inf now`. Lua uses Redis's own clock (`TIME`). All of an event's keys share the `{event:N}` hash tag, so they live on one Redis Cluster shard and can be used together in one script. The bitmap is a cache: it's rebuilt from Postgres bookings when missing, and expires at `starts_at + 1 day`.
+  - ✅ Step 3, the service lives in the domain package (`booking/service.go`), which is the Go default. Moving it to its own package later means moving one file.
+  - ✅ Step 4, seats are addressed by `(event_id, idx)` in the API and in Redis (holds become `hold:{event:e}:seat:{idx}`). Confirm resolves the seat inside its single `INSERT … SELECT id FROM seats WHERE event_id AND idx`.
+  - ✅ Step 5, no order key in Redis. The lock `hold:{event:N}:seat:{idx}` stores `orderID|userID`. Confirm sends `{order_id, event_id, seat idx}`, which the client already has from the reserve response, and the server checks the lock value before inserting. That means 2 Redis writes per reserve (the lock and the holds-set entry) instead of 3.
+  - Deferred: a per-user cap on active orders (against hoarding) goes with the Epic 9 waiting room.
+  - Agreed tests: duplicate booking returns `ErrSeatTaken` (store, plain); 50 buyers `Claim` one seat and exactly 1 wins (Redis, start gate); 50 buyers `Reserve` and `Confirm` and exactly 1 booking results (service with real Redis and Postgres, start gate); wrong user, retry, and expiry (service with fakes). 50 is more than `DB_MAX_CONNS`, so some goroutines wait for a connection. No forced-interleaving test, because it would only re-test Postgres's own unique index.
+- [ ] T3: HTTP endpoints for orders, with handler tests (ADR 9 pattern, faking the service). The seat map moves to reading from the Redis seat state.
+- [ ] T4: k6 harness and `make loadtest`, predictions, runs, `docs/experiments/02-booking.md`.
 
 ### Epic 3: merged into Epic 2
 On 2026-11-14 we decided not to build an unprotected version on purpose. We already know it races, and following Marina's principle, experiments are kept for real unknowns. The race shows up as the test that the protection must pass.
