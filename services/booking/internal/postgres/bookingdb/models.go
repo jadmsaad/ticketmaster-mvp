@@ -6,6 +6,8 @@ package bookingdb
 
 import (
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Booking struct {
@@ -13,6 +15,7 @@ type Booking struct {
 	SeatID    int64
 	UserID    string
 	CreatedAt time.Time
+	OrderID   pgtype.UUID
 }
 
 type Seat struct {
@@ -22,4 +25,5 @@ type Seat struct {
 	Row        string
 	Number     int32
 	PriceCents int32
+	Idx        int32
 }

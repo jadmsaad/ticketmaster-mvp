@@ -25,8 +25,8 @@ func (f fakeStore) ListSeats(ctx context.Context, eventID int64) ([]booking.Seat
 
 func TestHandlerListSeats(t *testing.T) {
 	seats := []booking.Seat{
-		{ID: 1, Section: "A", Row: "1", Number: 1, PriceCents: 5000, Available: true},
-		{ID: 2, Section: "A", Row: "1", Number: 2, PriceCents: 5000, Available: false},
+		{ID: 1, Idx: 0, Section: "A", Row: "1", Number: 1, PriceCents: 5000, Available: true},
+		{ID: 2, Idx: 1, Section: "A", Row: "1", Number: 2, PriceCents: 5000, Available: false},
 	}
 	tests := []struct {
 		name        string
@@ -41,8 +41,8 @@ func TestHandlerListSeats(t *testing.T) {
 			listSeatsFn: func(context.Context, int64) ([]booking.Seat, error) { return seats, nil },
 			wantStatus:  http.StatusOK,
 			wantBody: `[
-				{"id": 1, "section": "A", "row": "1", "number": 1, "price_cents": 5000, "available": true},
-				{"id": 2, "section": "A", "row": "1", "number": 2, "price_cents": 5000, "available": false}
+				{"id": 1, "idx": 0, "section": "A", "row": "1", "number": 1, "price_cents": 5000, "available": true},
+				{"id": 2, "idx": 1, "section": "A", "row": "1", "number": 2, "price_cents": 5000, "available": false}
 			]`,
 		},
 		{

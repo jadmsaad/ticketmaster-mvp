@@ -7,18 +7,98 @@ package bookingdb
 
 import (
 	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countSeats = `-- name: CountSeats :one
+SELECT count(*) FROM seats WHERE event_id = $1
+`
+
+// Inventory for rebuilding Redis seat state: how many seats, and which are sold.
+func (q *Queries) CountSeats(ctx context.Context, eventID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countSeats, eventID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createBooking = `-- name: CreateBooking :one
+INSERT INTO bookings (seat_id, order_id, user_id)
+SELECT s.id, $1::uuid, $2
+FROM seats s
+WHERE s.event_id = $3 AND s.idx = $4
+RETURNING id, created_at
+`
+
+type CreateBookingParams struct {
+	OrderID pgtype.UUID
+	UserID  string
+	EventID int64
+	Idx     int32
+}
+
+type CreateBookingRow struct {
+	ID        int64
+	CreatedAt time.Time
+}
+
+// Confirm: resolve (event_id, idx) to the seat and insert its booking in one
+// statement. UNIQUE (seat_id) rejects a second booking; no row means no such seat.
+func (q *Queries) CreateBooking(ctx context.Context, arg CreateBookingParams) (CreateBookingRow, error) {
+	row := q.db.QueryRow(ctx, createBooking,
+		arg.OrderID,
+		arg.UserID,
+		arg.EventID,
+		arg.Idx,
+	)
+	var i CreateBookingRow
+	err := row.Scan(&i.ID, &i.CreatedAt)
+	return i, err
+}
+
+const getBookingByOrder = `-- name: GetBookingByOrder :one
+SELECT b.id, b.order_id::text AS order_id, b.user_id, b.created_at, s.event_id, s.idx
+FROM bookings b
+JOIN seats s ON s.id = b.seat_id
+WHERE b.order_id = $1::uuid
+`
+
+type GetBookingByOrderRow struct {
+	ID        int64
+	OrderID   string
+	UserID    string
+	CreatedAt time.Time
+	EventID   int64
+	Idx       int32
+}
+
+func (q *Queries) GetBookingByOrder(ctx context.Context, orderID pgtype.UUID) (GetBookingByOrderRow, error) {
+	row := q.db.QueryRow(ctx, getBookingByOrder, orderID)
+	var i GetBookingByOrderRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.EventID,
+		&i.Idx,
+	)
+	return i, err
+}
+
 const listSeats = `-- name: ListSeats :many
-SELECT s.id, s.section, s.row, s.number, s.price_cents,
+SELECT s.id, s.idx, s.section, s.row, s.number, s.price_cents,
        NOT EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id) AS available
 FROM seats s
 WHERE s.event_id = $1
-ORDER BY s.section, s.row, s.number
+ORDER BY s.idx
 `
 
 type ListSeatsRow struct {
 	ID         int64
+	Idx        int32
 	Section    string
 	Row        string
 	Number     int32
@@ -26,9 +106,8 @@ type ListSeatsRow struct {
 	Available  bool
 }
 
-// A seat is available if it has no booking. NOT EXISTS rather than a LEFT
-// JOIN: until Epic 3 a seat can have several bookings, and a join would
-// return that seat once per booking.
+// A seat is available if it has no booking. Since migration 00002 a seat has
+// at most one booking (UNIQUE seat_id).
 func (q *Queries) ListSeats(ctx context.Context, eventID int64) ([]ListSeatsRow, error) {
 	rows, err := q.db.Query(ctx, listSeats, eventID)
 	if err != nil {
@@ -40,6 +119,7 @@ func (q *Queries) ListSeats(ctx context.Context, eventID int64) ([]ListSeatsRow,
 		var i ListSeatsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.Idx,
 			&i.Section,
 			&i.Row,
 			&i.Number,
@@ -49,6 +129,33 @@ func (q *Queries) ListSeats(ctx context.Context, eventID int64) ([]ListSeatsRow,
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSoldSeatIdxs = `-- name: ListSoldSeatIdxs :many
+SELECT s.idx
+FROM bookings b
+JOIN seats s ON s.id = b.seat_id
+WHERE s.event_id = $1
+`
+
+func (q *Queries) ListSoldSeatIdxs(ctx context.Context, eventID int64) ([]int32, error) {
+	rows, err := q.db.Query(ctx, listSoldSeatIdxs, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int32
+	for rows.Next() {
+		var idx int32
+		if err := rows.Scan(&idx); err != nil {
+			return nil, err
+		}
+		items = append(items, idx)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
