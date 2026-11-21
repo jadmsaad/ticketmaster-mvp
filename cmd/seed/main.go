@@ -5,7 +5,8 @@
 // inventory when it receives an "event created" message.
 //
 // It is safe to re-run. Pass -reset to wipe all data first, including bookings.
-// Run it after both services' migrations.
+// Run it after both services' migrations. Redis seat state isn't seeded: booking
+// rebuilds it from Postgres on first use (make reset also clears it).
 package main
 
 import (
@@ -74,8 +75,8 @@ func run(ctx context.Context, databaseURL string, reset bool) error {
 		}
 
 		tag, err := tx.Exec(ctx, `
-			INSERT INTO booking.seats (event_id, section, row, number, price_cents)
-			SELECT $1::bigint, 'A', r::text, n, $2::int
+			INSERT INTO booking.seats (event_id, idx, section, row, number, price_cents)
+			SELECT $1::bigint, (r - 1) * $4::int + (n - 1), 'A', r::text, n, $2::int
 			FROM generate_series(1, $3::int) AS r, generate_series(1, $4::int) AS n`,
 			eventID, priceCents, rows, seatsInRow)
 		if err != nil {
