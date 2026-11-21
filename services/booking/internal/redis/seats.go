@@ -59,29 +59,56 @@ func lockKey(eventID int64, seat int) string {
 // UUIDs, so the first "|" always separates them.
 func lockValue(h booking.Hold) string { return h.OrderID + "|" + h.UserID }
 
-// redisNow is the shared Lua prelude: the current time in ms, from Redis's clock.
+// Lua scripts receive their keys and arguments as two arrays, KEYS and ARGV,
+// in the order the Go caller passes them. Each script names them on its first
+// lines, so the rest reads in plain words.
+
+// redisNow is the shared Lua prelude: the current time in ms, from Redis's
+// clock, so every script agrees on "now" whatever the app servers' clocks say.
 const redisNow = `
-local t = redis.call("TIME")
-local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local redisTime = redis.call("TIME") -- {seconds, microseconds}
+local nowMs = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
 `
 
-// reserveScript claims a seat. KEYS: count, sold, holds, lock.
-// ARGV: seat idx, lock value, TTL ms. Returns the expiry (ms) or a status.
+// reserveScript claims a seat in one atomic step. Returns the hold's expiry
+// in ms, or a status string the Go side maps to a domain error.
 var reserveScript = goredis.NewScript(redisNow + `
-local n = redis.call("GET", KEYS[1])
-if not n then return "MISSING" end
+local seatCountKey = KEYS[1]
+local soldBitmapKey = KEYS[2]
+local liveHoldsKey = KEYS[3]
+local seatLockKey = KEYS[4]
 local seat = tonumber(ARGV[1])
-if seat < 0 or seat >= tonumber(n) then return "NOSEAT" end
--- drop expired holds so the set only contains live ones
-redis.call("ZREMRANGEBYSCORE", KEYS[3], "-inf", now)
-if redis.call("GETBIT", KEYS[2], seat) == 1 then return "SOLD" end
-local exp = now + tonumber(ARGV[3])
-if not redis.call("SET", KEYS[4], ARGV[2], "NX", "PXAT", exp) then return "HELD" end
-redis.call("ZADD", KEYS[3], exp, seat)
--- the set outlives its latest hold, never longer
-redis.call("PEXPIREAT", KEYS[3], exp, "GT")
-if redis.call("PTTL", KEYS[3]) < 0 then redis.call("PEXPIREAT", KEYS[3], exp) end
-return exp
+local lockOwner = ARGV[2] -- "order_id|user_id"
+local holdMs = tonumber(ARGV[3])
+
+-- No seat count means Redis has no state for this event: the service rebuilds it.
+local seatCount = redis.call("GET", seatCountKey)
+if not seatCount then return "MISSING" end
+
+-- Reject seats outside 0…count-1 (also stops SETBIT allocating a huge bitmap).
+if seat < 0 or seat >= tonumber(seatCount) then return "NOSEAT" end
+
+-- Drop holds that have already expired, so the set only contains live ones.
+redis.call("ZREMRANGEBYSCORE", liveHoldsKey, "-inf", nowMs)
+
+if redis.call("GETBIT", soldBitmapKey, seat) == 1 then return "SOLD" end
+
+-- Take the lock only if nobody holds the seat (NX); it expires by itself (PXAT).
+local expiresAtMs = nowMs + holdMs
+local locked = redis.call("SET", seatLockKey, lockOwner, "NX", "PXAT", expiresAtMs)
+if not locked then return "HELD" end
+
+-- Record the live hold, scored by when it expires.
+redis.call("ZADD", liveHoldsKey, expiresAtMs, seat)
+
+-- The set expires with its latest hold. GT only ever extends the expiry, but it
+-- does nothing while the key has no expiry yet, so set it in that case.
+redis.call("PEXPIREAT", liveHoldsKey, expiresAtMs, "GT")
+if redis.call("PTTL", liveHoldsKey) < 0 then
+	redis.call("PEXPIREAT", liveHoldsKey, expiresAtMs)
+end
+
+return expiresAtMs
 `)
 
 // Reserve claims h's seat for h's order until the returned time.
@@ -137,13 +164,22 @@ func (s *SeatState) HeldBy(ctx context.Context, eventID int64, seat int) (bookin
 	}, nil
 }
 
-// markSoldScript sets the sold bit, drops the seat from live holds, and
-// deletes the lock only if it's still h's. KEYS: sold, holds, lock.
-// ARGV: seat idx, lock value.
+// markSoldScript records a seat as sold and releases its hold.
 var markSoldScript = goredis.NewScript(`
-redis.call("SETBIT", KEYS[1], ARGV[1], 1)
-redis.call("ZREM", KEYS[2], ARGV[1])
-if redis.call("GET", KEYS[3]) == ARGV[2] then redis.call("DEL", KEYS[3]) end
+local soldBitmapKey = KEYS[1]
+local liveHoldsKey = KEYS[2]
+local seatLockKey = KEYS[3]
+local seat = ARGV[1]
+local lockOwner = ARGV[2] -- "order_id|user_id"
+
+redis.call("SETBIT", soldBitmapKey, seat, 1)
+redis.call("ZREM", liveHoldsKey, seat)
+
+-- Delete the lock only if it's still this order's: a stale order must never
+-- release a hold someone else has taken since.
+if redis.call("GET", seatLockKey) == lockOwner then
+	redis.call("DEL", seatLockKey)
+end
 return 1
 `)
 
@@ -161,14 +197,24 @@ func (s *SeatState) MarkSold(ctx context.Context, h booking.Hold) error {
 }
 
 // availabilityScript reads an event's seat state in one consistent step.
-// KEYS: count, sold, holds. Returns nil if the state is missing.
+// Returns {seat count, sold bitmap, live held seats}, or nil if the state is
+// missing.
 var availabilityScript = goredis.NewScript(redisNow + `
-local n = redis.call("GET", KEYS[1])
-if not n then return false end
-local sold = redis.call("GET", KEYS[2]) or ""
--- only holds that expire after now: expired ones never count, pruned or not
-local held = redis.call("ZRANGEBYSCORE", KEYS[3], "(" .. now, "+inf")
-return {n, sold, held}
+local seatCountKey = KEYS[1]
+local soldBitmapKey = KEYS[2]
+local liveHoldsKey = KEYS[3]
+
+local seatCount = redis.call("GET", seatCountKey)
+if not seatCount then return false end
+
+-- A missing bitmap means nothing is sold yet.
+local soldBitmap = redis.call("GET", soldBitmapKey) or ""
+
+-- Only holds that expire after now ("(" means strictly after): expired ones
+-- never count, whether or not they've been pruned yet.
+local heldSeats = redis.call("ZRANGEBYSCORE", liveHoldsKey, "(" .. nowMs, "+inf")
+
+return {seatCount, soldBitmap, heldSeats}
 `)
 
 // Availability returns which seats are sold and which are held right now.
@@ -198,15 +244,25 @@ func (s *SeatState) Availability(ctx context.Context, eventID int64) (booking.Av
 	return a, nil
 }
 
-// loadScript merges rebuilt sold bits into the bitmap (OR, so a seat sold
-// during the rebuild is never cleared) and sets the seat count, which marks
-// the state as present. KEYS: sold, count, load. ARGV: bitmap, count, TTL ms.
+// loadScript writes rebuilt seat state from Postgres.
 var loadScript = goredis.NewScript(`
-redis.call("SET", KEYS[3], ARGV[1], "PX", 60000)
-redis.call("BITOP", "OR", KEYS[1], KEYS[1], KEYS[3])
-redis.call("DEL", KEYS[3])
-redis.call("PEXPIRE", KEYS[1], ARGV[3])
-redis.call("SET", KEYS[2], ARGV[2], "PX", ARGV[3])
+local soldBitmapKey = KEYS[1]
+local seatCountKey = KEYS[2]
+local scratchKey = KEYS[3]
+local rebuiltBitmap = ARGV[1]
+local seatCount = ARGV[2]
+local stateTtlMs = ARGV[3]
+
+-- Merge the rebuilt bits into the existing bitmap with OR, so a seat sold while
+-- the rebuild was reading Postgres is never cleared. BITOP needs both inputs
+-- as keys, so the rebuilt bitmap goes into a short-lived scratch key first.
+redis.call("SET", scratchKey, rebuiltBitmap, "PX", 60000)
+redis.call("BITOP", "OR", soldBitmapKey, soldBitmapKey, scratchKey)
+redis.call("DEL", scratchKey)
+redis.call("PEXPIRE", soldBitmapKey, stateTtlMs)
+
+-- Writing the seat count last marks the state as present.
+redis.call("SET", seatCountKey, seatCount, "PX", stateTtlMs)
 return 1
 `)
 
