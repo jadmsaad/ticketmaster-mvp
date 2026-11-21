@@ -49,7 +49,8 @@ type Seat struct {
 	Available  bool   `json:"available"`
 }
 
-// Hold is a live claim on one seat by one order.
+// Hold is a live claim on one seat by one order. ExpiresAt is when the Redis
+// lock expires, which is confirmGrace after the deadline the buyer sees.
 type Hold struct {
 	OrderID   string
 	EventID   int64

@@ -81,8 +81,8 @@ func (f *fakeStore) Inventory(ctx context.Context, eventID int64) (Inventory, er
 
 var errRedisDown = errors.New("connection refused")
 
-// aliceHold is a live hold by alice on event 42 seat 6.
-var aliceHold = Hold{OrderID: "ord-1", EventID: 42, Seat: 6, UserID: "alice"}
+// aliceHold is a live hold by alice on event 42 seat 6, well before her deadline.
+var aliceHold = Hold{OrderID: "ord-1", EventID: 42, Seat: 6, UserID: "alice", ExpiresAt: time.Now().Add(DefaultHoldTTL + confirmGrace)}
 
 func heldBy(h Hold) func(context.Context, int64, int) (Hold, error) {
 	return func(context.Context, int64, int) (Hold, error) { return h, nil }
@@ -91,7 +91,7 @@ func heldBy(h Hold) func(context.Context, int64, int) (Hold, error) {
 func noHold(context.Context, int64, int) (Hold, error) { return Hold{}, ErrHoldNotFound }
 
 func TestReserveRebuildsMissingSeatState(t *testing.T) {
-	expiry := time.Date(2027, 3, 1, 20, 10, 0, 0, time.UTC)
+	lockExpiry := time.Date(2027, 3, 1, 20, 11, 0, 0, time.UTC)
 	calls := 0
 	state := &fakeState{
 		reserveFn: func(_ context.Context, h Hold, ttl time.Duration) (time.Time, error) {
@@ -99,10 +99,11 @@ func TestReserveRebuildsMissingSeatState(t *testing.T) {
 			if calls == 1 {
 				return time.Time{}, ErrInventoryMissing
 			}
-			if ttl != DefaultHoldTTL || h.UserID != "alice" || h.Seat != 6 {
+			// The lock lives confirmGrace longer than the buyer's deadline.
+			if ttl != DefaultHoldTTL+confirmGrace || h.UserID != "alice" || h.Seat != 6 {
 				t.Errorf("reserve got hold %+v, ttl %s", h, ttl)
 			}
-			return expiry, nil
+			return lockExpiry, nil
 		},
 		rebuildFn: func(ctx context.Context, eventID int64, load func(context.Context) (Inventory, error)) error {
 			_, err := load(ctx)
@@ -117,7 +118,8 @@ func TestReserveRebuildsMissingSeatState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Order{ID: "ord-1", EventID: 42, Seat: 6, UserID: "alice", Status: StatusHeld, ExpiresAt: expiry}
+	// The order shows the buyer's deadline: the lock's expiry minus the grace.
+	want := Order{ID: "ord-1", EventID: 42, Seat: 6, UserID: "alice", Status: StatusHeld, ExpiresAt: lockExpiry.Add(-confirmGrace)}
 	if order != want {
 		t.Errorf("order = %+v, want %+v", order, want)
 	}
@@ -155,6 +157,17 @@ func TestConfirm(t *testing.T) {
 			state: &fakeState{heldByFn: heldBy(aliceHold)},
 			store: &fakeStore{bookingByOrderFn: func(context.Context, string) (Booking, error) { return Booking{}, ErrBookingNotFound }},
 			// bob never reaches CreateBooking (it isn't set, so calling it would panic).
+			wantErr: ErrHoldNotFound,
+		},
+		{
+			name: "past the buyer's deadline, within the grace: refused before Postgres",
+			user: "alice",
+			state: &fakeState{heldByFn: heldBy(Hold{
+				OrderID: "ord-1", EventID: 42, Seat: 6, UserID: "alice",
+				ExpiresAt: time.Now().Add(confirmGrace / 2), // lock still alive, deadline passed
+			})},
+			// CreateBooking isn't set, so reaching Postgres would panic.
+			store:   &fakeStore{bookingByOrderFn: func(context.Context, string) (Booking, error) { return Booking{}, ErrBookingNotFound }},
 			wantErr: ErrHoldNotFound,
 		},
 		{
