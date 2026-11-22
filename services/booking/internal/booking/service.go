@@ -22,11 +22,13 @@ const confirmGrace = time.Minute
 
 // seatState is the fast seat state: holds and sold seats (Redis in production).
 type seatState interface {
-	// Reserve claims the seat for h's order for ttl and returns when the lock
-	// expires.
+	// Reserve claims the seat for h's order for ttl and returns the hold now on
+	// the seat, with ExpiresAt set to when its lock expires. If h's user already
+	// holds the seat, it returns that existing hold, unchanged: a retry never
+	// extends a hold.
 	// It returns ErrSeatTaken, ErrSeatHeld, ErrSeatNotFound, or
 	// ErrInventoryMissing.
-	Reserve(ctx context.Context, h Hold, ttl time.Duration) (time.Time, error)
+	Reserve(ctx context.Context, h Hold, ttl time.Duration) (Hold, error)
 	// HeldBy returns the live hold on a seat (ExpiresAt is when its lock
 	// expires), or ErrHoldNotFound.
 	HeldBy(ctx context.Context, eventID int64, seat int) (Hold, error)
@@ -71,20 +73,28 @@ func newOrderID() string {
 
 // Reserve holds a seat for userID and returns the held order. It never
 // touches Postgres, except to rebuild missing seat state.
+//
+// Reserve is idempotent per user and seat (ADR 11, amended): if userID already
+// holds the seat (a retried request, a double click, a second tab), it returns
+// that existing order with its original deadline.
 func (s *Service) Reserve(ctx context.Context, userID string, eventID int64, seat int) (Order, error) {
 	h := Hold{OrderID: s.newID(), EventID: eventID, Seat: seat, UserID: userID}
-	var lockExpiresAt time.Time
+	var held Hold
 	err := s.withSeatState(ctx, eventID, func() error {
 		var err error
 		// The lock outlives the buyer's deadline by confirmGrace.
-		lockExpiresAt, err = s.state.Reserve(ctx, h, s.holdTTL+confirmGrace)
+		held, err = s.state.Reserve(ctx, h, s.holdTTL+confirmGrace)
 		return err
 	})
 	if err != nil {
 		return Order{}, err
 	}
-	deadline := lockExpiresAt.Add(-confirmGrace)
-	return Order{ID: h.OrderID, EventID: eventID, Seat: seat, UserID: userID, Status: StatusHeld, ExpiresAt: deadline}, nil
+	// Only an existing hold can be past its deadline: the buyer's order can no
+	// longer be confirmed, and the seat frees up when the grace period ends.
+	if !held.beforeDeadline() {
+		return Order{}, ErrSeatHeld
+	}
+	return held.heldOrder(), nil
 }
 
 // Confirm turns a held order into a booking. A retry after success returns
@@ -92,14 +102,14 @@ func (s *Service) Reserve(ctx context.Context, userID string, eventID int64, sea
 func (s *Service) Confirm(ctx context.Context, userID, orderID string, eventID int64, seat int) (Order, error) {
 	h, err := s.state.HeldBy(ctx, eventID, seat)
 	switch {
-	case err == nil && h.OrderID == orderID && h.UserID == userID && beforeDeadline(h):
+	case err == nil && h.OrderID == orderID && h.UserID == userID && h.beforeDeadline():
 		return s.book(ctx, h)
 	case err != nil && !errors.Is(err, ErrHoldNotFound):
 		// Redis is unreachable: fail closed rather than guess.
 		return Order{}, err
 	}
 	// No live hold for this order: it may already have been confirmed.
-	return s.confirmedOrder(ctx, userID, orderID, eventID, seat)
+	return s.alreadyConfirmed(ctx, userID, orderID, eventID, seat)
 }
 
 // book inserts the booking for a verified hold, then updates Redis.
@@ -109,7 +119,7 @@ func (s *Service) book(ctx context.Context, h Hold) (Order, error) {
 	case errors.Is(err, ErrOrderAlreadyConfirmed):
 		// An earlier confirm committed but didn't finish updating Redis.
 		s.markSold(ctx, h)
-		return s.confirmedOrder(ctx, h.UserID, h.OrderID, h.EventID, h.Seat)
+		return s.alreadyConfirmed(ctx, h.UserID, h.OrderID, h.EventID, h.Seat)
 	case errors.Is(err, ErrSeatTaken):
 		// Redis didn't know the seat was sold (a lost sold bit). Repair it
 		// and release this hold; the backstop has done its job.
@@ -122,14 +132,7 @@ func (s *Service) book(ctx context.Context, h Hold) (Order, error) {
 	// fails now: the hold expires, and a later confirm attempt or rebuild
 	// repairs the sold bit.
 	s.markSold(ctx, h)
-	return Order{ID: h.OrderID, EventID: h.EventID, Seat: h.Seat, UserID: h.UserID, Status: StatusConfirmed}, nil
-}
-
-// beforeDeadline reports whether the buyer's deadline (the lock's expiry minus
-// confirmGrace) hasn't passed. Past it, the confirm is refused even though the
-// lock still exists, so the lock never expires during a confirm.
-func beforeDeadline(h Hold) bool {
-	return time.Until(h.ExpiresAt) > confirmGrace
+	return h.confirmedOrder(), nil
 }
 
 func (s *Service) markSold(ctx context.Context, h Hold) {
@@ -138,9 +141,10 @@ func (s *Service) markSold(ctx context.Context, h Hold) {
 	}
 }
 
-// confirmedOrder returns the order if it was already booked by this user for
-// this seat, and ErrHoldNotFound otherwise.
-func (s *Service) confirmedOrder(ctx context.Context, userID, orderID string, eventID int64, seat int) (Order, error) {
+// alreadyConfirmed returns the order if it was already booked by this user for
+// this seat, and ErrHoldNotFound otherwise, so another user who knows the
+// order ID learns nothing.
+func (s *Service) alreadyConfirmed(ctx context.Context, userID, orderID string, eventID int64, seat int) (Order, error) {
 	b, err := s.store.BookingByOrder(ctx, orderID)
 	if errors.Is(err, ErrBookingNotFound) {
 		return Order{}, ErrHoldNotFound
@@ -151,10 +155,11 @@ func (s *Service) confirmedOrder(ctx context.Context, userID, orderID string, ev
 	if b.UserID != userID || b.EventID != eventID || b.Seat != seat {
 		return Order{}, ErrHoldNotFound
 	}
-	return Order{ID: b.OrderID, EventID: b.EventID, Seat: b.Seat, UserID: b.UserID, Status: StatusConfirmed}, nil
+	return b.order(), nil
 }
 
-// Availability returns the event's current seat state, for the seat map.
+// Availability returns the event's current seat state and prices, for the
+// seat map. Like Reserve, it reads only Redis (ADR 12).
 func (s *Service) Availability(ctx context.Context, eventID int64) (Availability, error) {
 	var a Availability
 	err := s.withSeatState(ctx, eventID, func() error {

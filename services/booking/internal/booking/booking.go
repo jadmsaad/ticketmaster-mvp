@@ -12,7 +12,7 @@ var (
 	// ErrNoInventory means the event has no seats in booking's inventory,
 	// either because the event doesn't exist or because it isn't on sale.
 	ErrNoInventory = errors.New("no seat inventory for event")
-	// ErrSeatNotFound miseans the event has no seat at that index.
+	// ErrSeatNotFound means the event has no seat at that index.
 	ErrSeatNotFound = errors.New("seat not found")
 	// ErrSeatHeld means another order currently holds the seat.
 	ErrSeatHeld = errors.New("seat is held by another order")
@@ -28,6 +28,12 @@ var (
 	// ErrInventoryMissing means Redis has no seat state for the event, so it
 	// must be rebuilt from Postgres. The service handles it; callers never see it.
 	ErrInventoryMissing = errors.New("seat state missing for event")
+	// ErrSeatStateUnavailable means the seat state store (Redis) can't be
+	// reached. Booking fails closed: the API answers 503 rather than guess.
+	ErrSeatStateUnavailable = errors.New("seat state unavailable")
+	// ErrTooManyPrices means an event has more distinct prices than one byte
+	// per seat can index (MaxPrices).
+	ErrTooManyPrices = errors.New("too many distinct prices for one event")
 )
 
 // Order statuses. A held order lives only in Redis; a confirmed order is a
@@ -37,16 +43,14 @@ const (
 	StatusConfirmed = "confirmed"
 )
 
-// Seat is one seat in an event's inventory. Idx is its position within the
-// event (0…N-1); the API addresses seats as (event_id, idx).
+// Seat is one seat in an event's layout: where it is, never its price or
+// availability, which change and are served separately (ADR 12). Idx is its
+// position within the event (0…N-1); the API addresses seats as (event_id, idx).
 type Seat struct {
-	ID         int64  `json:"id"`
-	Idx        int    `json:"idx"`
-	Section    string `json:"section"`
-	Row        string `json:"row"`
-	Number     int    `json:"number"`
-	PriceCents int    `json:"price_cents"`
-	Available  bool   `json:"available"`
+	Idx     int    `json:"idx"`
+	Section string `json:"section"`
+	Row     string `json:"row"`
+	Number  int    `json:"number"`
 }
 
 // Hold is a live claim on one seat by one order. ExpiresAt is when the Redis
@@ -87,9 +91,38 @@ type Booking struct {
 	CreatedAt time.Time
 }
 
-// Inventory is what Redis seat state is rebuilt from: the seat count and
-// which seats are sold.
+// deadline is when the buyer must confirm by: the lock's expiry minus
+// confirmGrace (ADR 11).
+func (h Hold) deadline() time.Time {
+	return h.ExpiresAt.Add(-confirmGrace)
+}
+
+// beforeDeadline reports whether the buyer's deadline hasn't passed. Past it,
+// the order can't be confirmed even though the lock still exists, so the lock
+// never expires during a confirm.
+func (h Hold) beforeDeadline() bool {
+	return time.Now().Before(h.deadline())
+}
+
+// heldOrder is the order a live hold represents, showing the buyer's deadline.
+func (h Hold) heldOrder() Order {
+	return Order{ID: h.OrderID, EventID: h.EventID, Seat: h.Seat, UserID: h.UserID, Status: StatusHeld, ExpiresAt: h.deadline()}
+}
+
+// confirmedOrder is the order once the hold's booking has committed.
+func (h Hold) confirmedOrder() Order {
+	return Order{ID: h.OrderID, EventID: h.EventID, Seat: h.Seat, UserID: h.UserID, Status: StatusConfirmed}
+}
+
+// order is the confirmed order a booking represents.
+func (b Booking) order() Order {
+	return Order{ID: b.OrderID, EventID: b.EventID, Seat: b.Seat, UserID: b.UserID, Status: StatusConfirmed}
+}
+
+// Inventory is what Redis seat state is rebuilt from: the seat count, which
+// seats are sold, and each seat's price in cents (Prices[idx]).
 type Inventory struct {
-	Seats int
-	Sold  []int
+	Seats  int
+	Sold   []int
+	Prices []int
 }

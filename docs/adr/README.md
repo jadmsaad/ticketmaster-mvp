@@ -15,3 +15,4 @@ An ADR records a decision that is hard to reverse or that shapes the architectur
 | 9 | [Handler tests: fakes behind consumer-side interfaces, sent through the mux](0009-handler-tests.md) | Accepted |
 | 10 | [Ports-and-adapters package layout inside each service](0010-ports-and-adapters-layout.md) | Accepted |
 | 11 | [Booking flow: Redis holds and seat state in front of a Postgres backstop](0011-booking-flow.md) | Accepted |
+| 12 | [Seat map API: a static layout, plus live availability and prices as encoded arrays](0012-seat-map-api.md) | Accepted |

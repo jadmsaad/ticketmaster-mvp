@@ -45,6 +45,10 @@ func TestReserveConfirmFlow(t *testing.T) {
 	if _, err := svc.Reserve(ctx, "bob", event, 6); !errors.Is(err, booking.ErrSeatHeld) {
 		t.Fatalf("bob reserves a held seat: err = %v, want ErrSeatHeld", err)
 	}
+	// alice retrying (lost response, double click) gets the same order back.
+	if retry, err := svc.Reserve(ctx, "alice", event, 6); err != nil || retry != held {
+		t.Fatalf("alice retries reserve = %+v, %v; want %+v", retry, err, held)
+	}
 
 	confirmed, err := svc.Confirm(ctx, "alice", held.ID, event, 6)
 	if err != nil {
@@ -66,6 +70,10 @@ func TestReserveConfirmFlow(t *testing.T) {
 	}
 	if a.Available(6) || !a.Available(5) {
 		t.Errorf("available(6) = %v, available(5) = %v; want false, true", a.Available(6), a.Available(5))
+	}
+	// Prices were rebuilt from Postgres into Redis: one distinct price, every seat on it.
+	if len(a.Prices) != 1 || a.Prices[0] != 5000 || len(a.SeatPrice) != 10 {
+		t.Errorf("prices = %v, seat price = %v; want [5000] and 10 seats", a.Prices, a.SeatPrice)
 	}
 	if _, err := svc.Reserve(ctx, "bob", event, 6); !errors.Is(err, booking.ErrSeatTaken) {
 		t.Errorf("reserve a sold seat: err = %v, want ErrSeatTaken", err)

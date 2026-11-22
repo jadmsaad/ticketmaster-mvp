@@ -12,18 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countSeats = `-- name: CountSeats :one
-SELECT count(*) FROM seats WHERE event_id = $1
-`
-
-// Inventory for rebuilding Redis seat state: how many seats, and which are sold.
-func (q *Queries) CountSeats(ctx context.Context, eventID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countSeats, eventID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createBooking = `-- name: CreateBooking :one
 INSERT INTO bookings (seat_id, order_id, user_id)
 SELECT s.id, $1::uuid, $2
@@ -88,44 +76,71 @@ func (q *Queries) GetBookingByOrder(ctx context.Context, orderID pgtype.UUID) (G
 	return i, err
 }
 
-const listSeats = `-- name: ListSeats :many
-SELECT s.id, s.idx, s.section, s.row, s.number, s.price_cents,
-       NOT EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id) AS available
-FROM seats s
-WHERE s.event_id = $1
-ORDER BY s.idx
+const listLayout = `-- name: ListLayout :many
+SELECT idx, section, row, number
+FROM seats
+WHERE event_id = $1
+ORDER BY idx
 `
 
-type ListSeatsRow struct {
-	ID         int64
-	Idx        int32
-	Section    string
-	Row        string
-	Number     int32
-	PriceCents int32
-	Available  bool
+type ListLayoutRow struct {
+	Idx     int32
+	Section string
+	Row     string
+	Number  int32
 }
 
-// A seat is available if it has no booking. Since migration 00002 a seat has
-// at most one booking (UNIQUE seat_id).
-func (q *Queries) ListSeats(ctx context.Context, eventID int64) ([]ListSeatsRow, error) {
-	rows, err := q.db.Query(ctx, listSeats, eventID)
+// The static seat layout: where each seat is. Prices and availability change,
+// so they're served from Redis instead (ADR 12).
+func (q *Queries) ListLayout(ctx context.Context, eventID int64) ([]ListLayoutRow, error) {
+	rows, err := q.db.Query(ctx, listLayout, eventID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListSeatsRow
+	var items []ListLayoutRow
 	for rows.Next() {
-		var i ListSeatsRow
+		var i ListLayoutRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.Idx,
 			&i.Section,
 			&i.Row,
 			&i.Number,
-			&i.PriceCents,
-			&i.Available,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSeatPrices = `-- name: ListSeatPrices :many
+SELECT idx, price_cents
+FROM seats
+WHERE event_id = $1
+ORDER BY idx
+`
+
+type ListSeatPricesRow struct {
+	Idx        int32
+	PriceCents int32
+}
+
+// Inventory for rebuilding Redis seat state: every seat's price (whose count is
+// the seat count), and which seats are sold.
+func (q *Queries) ListSeatPrices(ctx context.Context, eventID int64) ([]ListSeatPricesRow, error) {
+	rows, err := q.db.Query(ctx, listSeatPrices, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSeatPricesRow
+	for rows.Next() {
+		var i ListSeatPricesRow
+		if err := rows.Scan(&i.Idx, &i.PriceCents); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -10,6 +10,7 @@
 // Environment:
 //
 //	DATABASE_URL   required
+//	REDIS_URL      required by services that set Config.Redis
 //	ADDR           listen address (default :8080)
 //	DB_MAX_CONNS   connection pool size (default 20)
 package service
@@ -30,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	goredis "github.com/redis/go-redis/v9"
 
 	"ticketmaster-mvp/internal/httpx"
 	"ticketmaster-mvp/internal/postgres"
@@ -38,13 +40,23 @@ import (
 type Config struct {
 	Name       string
 	Migrations fs.FS
+	// Redis makes the service connect to REDIS_URL at startup.
+	Redis bool
 	// Routes registers the service's endpoints.
-	Routes func(mux *http.ServeMux, pool *pgxpool.Pool)
+	Routes func(mux *http.ServeMux, deps Deps)
+}
+
+// Deps are the connections a service's routes can use.
+type Deps struct {
+	Pool *pgxpool.Pool
+	// Redis is nil unless Config.Redis is set.
+	Redis *goredis.Client
 }
 
 // env is the runtime configuration read from environment variables.
 type env struct {
 	databaseURL string
+	redisURL    string
 	addr        string
 	maxConns    int32
 }
@@ -52,6 +64,7 @@ type env struct {
 func loadEnv() (env, error) {
 	e := env{
 		databaseURL: os.Getenv("DATABASE_URL"),
+		redisURL:    os.Getenv("REDIS_URL"),
 		addr:        os.Getenv("ADDR"),
 		maxConns:    20,
 	}
@@ -113,12 +126,22 @@ func serve(ctx context.Context, cfg Config, e env) error {
 	defer pool.Close()
 	prometheus.MustRegister(postgres.NewPoolCollector(pool))
 
+	deps := Deps{Pool: pool}
+	if cfg.Redis {
+		rdb, err := connectRedis(ctx, e.redisURL)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rdb.Close() }()
+		deps.Redis = rdb
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.Health(pool.Ping))
 	// Internal only: the load balancer routes just the API paths, so this
 	// isn't reachable from the internet.
 	mux.Handle("GET /metrics", promhttp.Handler())
-	cfg.Routes(mux, pool)
+	cfg.Routes(mux, deps)
 
 	server := &http.Server{
 		Addr:    e.addr,
@@ -146,4 +169,25 @@ func serve(ctx context.Context, cfg Config, e env) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return server.Shutdown(shutdownCtx)
+}
+
+// connectRedis opens a Redis client and checks it can reach the server, so a
+// wrong REDIS_URL stops the service at startup rather than at the first
+// request.
+func connectRedis(ctx context.Context, url string) (*goredis.Client, error) {
+	if url == "" {
+		return nil, errors.New("REDIS_URL is not set")
+	}
+	opts, err := goredis.ParseURL(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	rdb := goredis.NewClient(opts)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("connect to redis: %w", err)
+	}
+	return rdb, nil
 }

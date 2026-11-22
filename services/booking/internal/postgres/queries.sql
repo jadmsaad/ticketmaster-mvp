@@ -1,11 +1,10 @@
--- A seat is available if it has no booking. Since migration 00002 a seat has
--- at most one booking (UNIQUE seat_id).
--- name: ListSeats :many
-SELECT s.id, s.idx, s.section, s.row, s.number, s.price_cents,
-       NOT EXISTS (SELECT 1 FROM bookings b WHERE b.seat_id = s.id) AS available
-FROM seats s
-WHERE s.event_id = $1
-ORDER BY s.idx;
+-- The static seat layout: where each seat is. Prices and availability change,
+-- so they're served from Redis instead (ADR 12).
+-- name: ListLayout :many
+SELECT idx, section, row, number
+FROM seats
+WHERE event_id = $1
+ORDER BY idx;
 
 -- Confirm: resolve (event_id, idx) to the seat and insert its booking in one
 -- statement. UNIQUE (seat_id) rejects a second booking; no row means no such seat.
@@ -22,9 +21,13 @@ FROM bookings b
 JOIN seats s ON s.id = b.seat_id
 WHERE b.order_id = sqlc.arg(order_id)::uuid;
 
--- Inventory for rebuilding Redis seat state: how many seats, and which are sold.
--- name: CountSeats :one
-SELECT count(*) FROM seats WHERE event_id = $1;
+-- Inventory for rebuilding Redis seat state: every seat's price (whose count is
+-- the seat count), and which seats are sold.
+-- name: ListSeatPrices :many
+SELECT idx, price_cents
+FROM seats
+WHERE event_id = $1
+ORDER BY idx;
 
 -- name: ListSoldSeatIdxs :many
 SELECT s.idx

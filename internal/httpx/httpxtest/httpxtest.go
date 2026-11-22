@@ -13,10 +13,16 @@ import (
 // tests cover the route pattern and path parameters, not just the handler.
 func Serve(t *testing.T, register func(*http.ServeMux), method, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	return Do(t, register, httptest.NewRequestWithContext(t.Context(), method, path, nil))
+}
+
+// Do is Serve for a request the test builds itself, with a body or headers.
+func Do(t *testing.T, register func(*http.ServeMux), req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
 	mux := http.NewServeMux()
 	register(mux)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, nil))
+	mux.ServeHTTP(rec, req)
 	return rec
 }
 

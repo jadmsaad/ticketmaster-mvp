@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -13,12 +14,15 @@ import (
 
 const event = 42
 
+// prices: seats 0–4 cost $50, seats 5–9 cost $90.
+var prices = []int{5000, 5000, 5000, 5000, 5000, 9000, 9000, 9000, 9000, 9000}
+
 // newState returns seat state for an event with 10 seats, seat 3 already sold.
 func newState(t *testing.T) *SeatState {
 	t.Helper()
 	s := NewSeatState(testredis.New(t))
 	load := func(context.Context) (booking.Inventory, error) {
-		return booking.Inventory{Seats: 10, Sold: []int{3}}, nil
+		return booking.Inventory{Seats: 10, Sold: []int{3}, Prices: prices}, nil
 	}
 	if err := s.Rebuild(t.Context(), event, load); err != nil {
 		t.Fatal(err)
@@ -34,13 +38,16 @@ func TestReserve(t *testing.T) {
 	s := newState(t)
 	ctx := t.Context()
 
-	exp, err := s.Reserve(ctx, hold("o1", 5), time.Minute)
+	held, err := s.Reserve(ctx, hold("o1", 5), time.Minute)
 	if err != nil {
 		t.Fatalf("reserve free seat: %v", err)
 	}
+	if held.OrderID != "o1" || held.UserID != "user-o1" || held.Seat != 5 {
+		t.Errorf("held = %+v, want order o1 on seat 5", held)
+	}
 	// The expiry comes from Redis's clock, which can be slightly ahead of
 	// ours (Redis runs in Docker), so allow up to a second of skew.
-	if until := time.Until(exp); until < 50*time.Second || until > time.Minute+time.Second {
+	if until := time.Until(held.ExpiresAt); until < 50*time.Second || until > time.Minute+time.Second {
 		t.Errorf("expiry in %s, want about 1m", until)
 	}
 
@@ -66,11 +73,37 @@ func TestReserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("held by: %v", err)
 	}
-	if got.OrderID != "o1" || got.UserID != "user-o1" {
-		t.Errorf("held by %+v, want order o1 / user-o1", got)
+	// HeldBy reads the expiry from Redis too, so it matches Reserve's exactly.
+	if got != held {
+		t.Errorf("held by %+v, want %+v", got, held)
 	}
 	if _, err := s.HeldBy(ctx, event, 6); !errors.Is(err, booking.ErrHoldNotFound) {
 		t.Errorf("held by on a free seat: err = %v, want ErrHoldNotFound", err)
+	}
+}
+
+// The same buyer reserving the same seat again gets their existing hold back,
+// with its original expiry: a retry never extends a hold.
+func TestReserveRetryReturnsExistingHold(t *testing.T) {
+	s := newState(t)
+	ctx := t.Context()
+	first, err := s.Reserve(ctx, hold("o1", 5), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond) // a later retry would get a later expiry if it extended
+
+	retry := booking.Hold{OrderID: "o1-retry", EventID: event, Seat: 5, UserID: "user-o1"}
+	got, err := s.Reserve(ctx, retry, time.Minute)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got != first {
+		t.Errorf("retry got %+v, want the first hold %+v", got, first)
+	}
+	// Anyone else is still told the seat is held.
+	if _, err := s.Reserve(ctx, hold("o2", 5), time.Minute); !errors.Is(err, booking.ErrSeatHeld) {
+		t.Errorf("another buyer: err = %v, want ErrSeatHeld", err)
 	}
 }
 
@@ -95,8 +128,45 @@ func TestAvailability(t *testing.T) {
 		}
 	}
 
+	if want := []int{5000, 9000}; !slices.Equal(a.Prices, want) {
+		t.Errorf("prices = %v, want %v", a.Prices, want)
+	}
+	for seat, want := range prices {
+		if got := a.Prices[a.SeatPrice[seat]]; got != want {
+			t.Errorf("seat %d price = %d, want %d", seat, got, want)
+		}
+	}
+
 	if _, err := s.Availability(ctx, 7); !errors.Is(err, booking.ErrInventoryMissing) {
 		t.Errorf("event with no state: err = %v, want ErrInventoryMissing", err)
+	}
+}
+
+// Prices lost on their own (the seat count still there) count as missing
+// state, so the service rebuilds rather than serving a seat map without prices.
+func TestAvailabilityWithoutPricesIsMissing(t *testing.T) {
+	s := newState(t)
+	ctx := t.Context()
+	if err := s.rdb.Del(ctx, pricesKey(event)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Availability(ctx, event); !errors.Is(err, booking.ErrInventoryMissing) {
+		t.Errorf("err = %v, want ErrInventoryMissing", err)
+	}
+}
+
+// Redis being unreachable is reported as ErrSeatStateUnavailable, which the
+// API turns into a 503.
+func TestUnreachableRedisIsUnavailable(t *testing.T) {
+	s := newState(t)
+	if err := s.rdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reserve(t.Context(), hold("o1", 5), time.Minute); !errors.Is(err, booking.ErrSeatStateUnavailable) {
+		t.Errorf("reserve: err = %v, want ErrSeatStateUnavailable", err)
+	}
+	if _, err := s.Availability(t.Context(), event); !errors.Is(err, booking.ErrSeatStateUnavailable) {
+		t.Errorf("availability: err = %v, want ErrSeatStateUnavailable", err)
 	}
 }
 
@@ -180,7 +250,7 @@ func TestRebuildNeverClearsSoldSeats(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := func(context.Context) (booking.Inventory, error) {
-		return booking.Inventory{Seats: 10, Sold: []int{3}}, nil // doesn't know about seat 8
+		return booking.Inventory{Seats: 10, Sold: []int{3}, Prices: prices}, nil // doesn't know about seat 8
 	}
 	if err := s.Rebuild(ctx, event, stale); err != nil {
 		t.Fatal(err)

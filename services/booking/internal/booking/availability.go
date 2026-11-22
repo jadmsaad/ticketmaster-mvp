@@ -3,12 +3,32 @@ package booking
 import "slices"
 
 // Availability is an event's seat state at one moment: Sold is a bitmap in
-// Redis bit order (seat 0 is the most significant bit of byte 0), and Held
-// lists seats with a live hold.
+// Redis bit order (seat 0 is the most significant bit of byte 0), Held lists
+// seats with a live hold, and Prices and SeatPrice are the dictionary-encoded
+// seat prices (see EncodePrices).
 type Availability struct {
-	Seats int
-	Sold  []byte
-	Held  []int
+	Seats     int
+	Sold      []byte
+	Held      []int
+	Prices    []int
+	SeatPrice []byte
+}
+
+// Unavailable returns a bitmap with a seat's bit set if it's sold or held, in
+// the same bit order as Sold, one bit per seat. Buyers see both the same way
+// (ADR 12).
+func (a Availability) Unavailable() []byte {
+	bits := make([]byte, (a.Seats+7)/8)
+	// Start from the sold bits. Redis drops trailing zero bytes, so Sold may be
+	// shorter than bits; the rest stay zero.
+	copy(bits, a.Sold)
+	// Then switch on each held seat's bit: its byte, then its bit in that byte.
+	for _, seat := range a.Held {
+		if seat >= 0 && seat < a.Seats {
+			bits[seat/8] |= 0x80 >> (seat % 8)
+		}
+	}
+	return bits
 }
 
 // Available reports whether a seat can be reserved: it exists, isn't sold,
