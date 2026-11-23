@@ -11,6 +11,7 @@ EVENT_DB    := $(subst %s,event_api:event_api,$(PG))
 BOOKING_DB  := $(subst %s,booking_api:booking_api,$(PG))
 ADMIN_DB    := $(subst %s,ticketmaster:ticketmaster,$(PG))
 TEST_DB     := postgres://ticketmaster:ticketmaster@localhost:5432/postgres?sslmode=disable
+REDIS       := redis://localhost:6379/0
 TEST_REDIS  := redis://localhost:6379/15
 
 EVENT_CMD   := ./services/event/cmd/event-api
@@ -42,7 +43,7 @@ run-event: ## Run event-api on :8081
 	DATABASE_URL=$(EVENT_DB) ADDR=:8081 go run $(EVENT_CMD)
 
 run-booking: ## Run booking-api on :8082
-	DATABASE_URL=$(BOOKING_DB) ADDR=:8082 go run $(BOOKING_CMD)
+	DATABASE_URL=$(BOOKING_DB) REDIS_URL=$(REDIS) ADDR=:8082 go run $(BOOKING_CMD)
 
 test: ## Run all tests against the local Postgres and Redis, with the race detector
 	TEST_POSTGRES_URL=$(TEST_DB) TEST_REDIS_URL=$(TEST_REDIS) go test -race -p 1 ./...

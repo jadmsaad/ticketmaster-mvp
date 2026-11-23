@@ -26,6 +26,7 @@ x-booking: &booking
   image: ticketmaster/booking-api
   environment:
     DATABASE_URL: postgres://booking_api:booking_api@db:5432/ticketmaster?sslmode=disable
+    REDIS_URL: redis://redis:6379/0
 
 x-api-healthcheck: &api-healthcheck
   test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
@@ -93,6 +94,8 @@ services:
     depends_on:
       booking-migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck: *api-healthcheck
 
   # Dev-only sample data. To wipe and re-seed: make reset

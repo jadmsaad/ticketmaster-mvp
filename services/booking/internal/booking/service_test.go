@@ -10,14 +10,14 @@ import (
 // fakeState and fakeStore let each test plug in the behaviour it needs. A
 // method whose function isn't set panics, so unexpected calls fail the test.
 type fakeState struct {
-	reserveFn      func(context.Context, Hold, time.Duration) (time.Time, error)
+	reserveFn      func(context.Context, Hold, time.Duration) (Hold, error)
 	heldByFn       func(context.Context, int64, int) (Hold, error)
 	markSoldFn     func(context.Context, Hold) error
 	availabilityFn func(context.Context, int64) (Availability, error)
 	rebuildFn      func(context.Context, int64, func(context.Context) (Inventory, error)) error
 }
 
-func (f *fakeState) Reserve(ctx context.Context, h Hold, ttl time.Duration) (time.Time, error) {
+func (f *fakeState) Reserve(ctx context.Context, h Hold, ttl time.Duration) (Hold, error) {
 	if f.reserveFn == nil {
 		panic("fakeState: unexpected call to Reserve")
 	}
@@ -91,19 +91,20 @@ func heldBy(h Hold) func(context.Context, int64, int) (Hold, error) {
 func noHold(context.Context, int64, int) (Hold, error) { return Hold{}, ErrHoldNotFound }
 
 func TestReserveRebuildsMissingSeatState(t *testing.T) {
-	lockExpiry := time.Date(2027, 3, 1, 20, 11, 0, 0, time.UTC)
+	lockExpiry := time.Now().Add(DefaultHoldTTL + confirmGrace)
 	calls := 0
 	state := &fakeState{
-		reserveFn: func(_ context.Context, h Hold, ttl time.Duration) (time.Time, error) {
+		reserveFn: func(_ context.Context, h Hold, ttl time.Duration) (Hold, error) {
 			calls++
 			if calls == 1 {
-				return time.Time{}, ErrInventoryMissing
+				return Hold{}, ErrInventoryMissing
 			}
 			// The lock lives confirmGrace longer than the buyer's deadline.
 			if ttl != DefaultHoldTTL+confirmGrace || h.UserID != "alice" || h.Seat != 6 {
 				t.Errorf("reserve got hold %+v, ttl %s", h, ttl)
 			}
-			return lockExpiry, nil
+			h.ExpiresAt = lockExpiry
+			return h, nil
 		},
 		rebuildFn: func(ctx context.Context, eventID int64, load func(context.Context) (Inventory, error)) error {
 			_, err := load(ctx)
@@ -125,6 +126,45 @@ func TestReserveRebuildsMissingSeatState(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("reserve called %d times, want 2 (before and after the rebuild)", calls)
+	}
+}
+
+// A user who already holds the seat gets their existing order back, as long
+// as it can still be confirmed.
+func TestReserveReturnsExistingHold(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing Hold
+		want     Order
+		wantErr  error
+	}{
+		{
+			name:     "retry before the deadline returns the existing order",
+			existing: aliceHold,
+			want:     Order{ID: "ord-1", EventID: 42, Seat: 6, UserID: "alice", Status: StatusHeld, ExpiresAt: aliceHold.ExpiresAt.Add(-confirmGrace)},
+		},
+		{
+			name:     "retry past the deadline, within the grace: the seat is held",
+			existing: Hold{OrderID: "ord-1", EventID: 42, Seat: 6, UserID: "alice", ExpiresAt: time.Now().Add(confirmGrace / 2)},
+			wantErr:  ErrSeatHeld,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &fakeState{reserveFn: func(context.Context, Hold, time.Duration) (Hold, error) { return tc.existing, nil }}
+			svc := NewService(state, &fakeStore{}, DefaultHoldTTL)
+			// The retry's new order ID loses to the existing one.
+			svc.newID = func() string { return "ord-2" }
+
+			got, err := svc.Reserve(t.Context(), "alice", 42, 6)
+
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("order = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -175,6 +215,14 @@ func TestConfirm(t *testing.T) {
 			user:    "alice",
 			state:   &fakeState{heldByFn: noHold},
 			store:   &fakeStore{bookingByOrderFn: func(context.Context, string) (Booking, error) { return Booking{}, ErrBookingNotFound }},
+			wantErr: ErrHoldNotFound,
+		},
+		{
+			name:  "another user replaying a confirmed order's ID learns nothing",
+			user:  "bob",
+			state: &fakeState{heldByFn: noHold},
+			store: &fakeStore{bookingByOrderFn: func(context.Context, string) (Booking, error) { return bookingOf(aliceHold), nil }},
+			// The same answer as an order that never existed.
 			wantErr: ErrHoldNotFound,
 		},
 		{

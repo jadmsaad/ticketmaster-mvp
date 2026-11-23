@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -21,13 +20,15 @@ const (
 	orderB = "0193f2c4-0000-7000-8000-00000000000b"
 )
 
-// newStore returns a store over a fresh database with seats idx 0–2 for eventID.
+// newStore returns a store over a fresh database with seats idx 0–2 for
+// eventID: seats 0 and 1 cost $50, seat 2 costs $90.
 func newStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
 	pool := testdb.New(t, "booking", migrations.FS)
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO seats (event_id, idx, section, row, number, price_cents)
-		SELECT $1, n - 1, 'A', '1', n, 5000 FROM generate_series(1, 3) AS n`, eventID)
+		SELECT $1, n - 1, 'A', '1', n, CASE WHEN n = 3 THEN 9000 ELSE 5000 END
+		FROM generate_series(1, 3) AS n`, eventID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestBookingByOrder(t *testing.T) {
 }
 
 func TestInventory(t *testing.T) {
-	store, _ := newStore(t)
+	store, pool := newStore(t)
 	ctx := t.Context()
 	if _, err := store.CreateBooking(ctx, booking.NewBooking{OrderID: orderA, EventID: eventID, Seat: 2, UserID: "alice"}); err != nil {
 		t.Fatal(err)
@@ -97,34 +98,42 @@ func TestInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inv.Seats != 3 || !slices.Equal(inv.Sold, []int{2}) {
-		t.Errorf("inventory = %+v, want 3 seats with seat 2 sold", inv)
+	if inv.Seats != 3 || !slices.Equal(inv.Sold, []int{2}) || !slices.Equal(inv.Prices, []int{5000, 5000, 9000}) {
+		t.Errorf("inventory = %+v, want 3 seats priced 5000, 5000, 9000 with seat 2 sold", inv)
 	}
 	if _, err := store.Inventory(ctx, 7); !errors.Is(err, booking.ErrNoInventory) {
 		t.Errorf("unknown event: err = %v, want ErrNoInventory", err)
 	}
-}
 
-func TestListSeats(t *testing.T) {
-	store, _ := newStore(t)
-	ctx := context.Background()
-	if _, err := store.CreateBooking(ctx, booking.NewBooking{OrderID: orderA, EventID: eventID, Seat: 1, UserID: "alice"}); err != nil {
-		t.Fatal(err)
-	}
-
-	seats, err := store.ListSeats(ctx, eventID)
+	// A gap in idx would shift every later seat's bit and price, so it's an error.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO seats (event_id, idx, section, row, number, price_cents)
+		VALUES (8, 0, 'A', '1', 1, 5000), (8, 2, 'A', '1', 3, 5000)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(seats) != 3 {
-		t.Fatalf("got %d seats, want 3", len(seats))
+	if _, err := store.Inventory(ctx, 8); err == nil {
+		t.Error("event with an idx gap: want an error")
 	}
-	for _, seat := range seats {
-		if want := seat.Idx != 1; seat.Available != want {
-			t.Errorf("seat %d: available = %v, want %v", seat.Idx, seat.Available, want)
-		}
+}
+
+func TestLayout(t *testing.T) {
+	store, _ := newStore(t)
+	ctx := t.Context()
+
+	seats, err := store.Layout(ctx, eventID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := store.ListSeats(ctx, 999); !errors.Is(err, booking.ErrNoInventory) {
+	want := []booking.Seat{
+		{Idx: 0, Section: "A", Row: "1", Number: 1},
+		{Idx: 1, Section: "A", Row: "1", Number: 2},
+		{Idx: 2, Section: "A", Row: "1", Number: 3},
+	}
+	if !slices.Equal(seats, want) {
+		t.Errorf("layout = %+v, want %+v", seats, want)
+	}
+	if _, err := store.Layout(ctx, 999); !errors.Is(err, booking.ErrNoInventory) {
 		t.Fatalf("unknown event: err = %v, want ErrNoInventory", err)
 	}
 }

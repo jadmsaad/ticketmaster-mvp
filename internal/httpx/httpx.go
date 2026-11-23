@@ -4,6 +4,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,25 @@ func PathID(r *http.Request, name string) (int64, error) {
 		return 0, fmt.Errorf("invalid %s %q", name, r.PathValue(name))
 	}
 	return id, nil
+}
+
+// maxBodyBytes caps request bodies. API requests are a few fields; anything
+// bigger is a mistake or an attack.
+const maxBodyBytes = 1 << 16
+
+// DecodeJSON decodes the request body into v. It rejects unknown fields, a
+// body over maxBodyBytes, and anything after the JSON value, so client bugs
+// surface as 400s instead of being silently ignored.
+func DecodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("decode request body: %w", err)
+	}
+	if dec.More() {
+		return errors.New("decode request body: unexpected data after the JSON value")
+	}
+	return nil
 }
 
 // WriteJSON writes body as JSON with the given status code.

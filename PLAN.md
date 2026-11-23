@@ -1,10 +1,12 @@
 # Ticketmaster MVP: Plan
 
-Last updated: 2026-11-15
+Last updated: 2026-11-22
 
 **Goal:** build a working backend MVP of Ticketmaster: not a throwaway proof of concept, but trimmed in scope. Along the way, learn how professionals build a Go backend like this and the system design behind it. Use production patterns rather than tutorial shortcuts. The UI is out of scope.
 
-**Current status:** Epic 2 is in progress. The epic design is agreed (5 decisions below), and T1 (Redis holds plus the ports-and-adapters layout, ADR 10) is merged. Next step: T2's decision steps. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
+**Current status:** Epic 2 is in progress. T1 (Redis and the ports-and-adapters layout, ADR 10) and T2 (seat state, booking service, and backstop migration; ADR 11 plus its grace-period amendment) are merged (PR #3, `884e402`). T3 (the seat map API and order endpoints; ADR 12) is built on branch `e2-t3-seat-map-and-orders`, awaiting review and the PR. AI lessons 1–2 in `~/ai-dev-learning` interleave from here.
+
+**Reminder (deferred 2026-11-22):** raise renaming the project once T3 merges. A public repo named after a trademark reads as a tutorial clone. The name is in the GitHub repo, the Go module path (15 files), the DB name and user, the Docker image names, the docs, and the local folder. Claude's memory folder is keyed to the folder path, so move it too. Do it as its own `chore/rename` PR.
 
 ## How we work
 
@@ -114,7 +116,14 @@ Tasks:
   - ✅ Step 5, no order key in Redis. The lock `hold:{event:N}:seat:{idx}` stores `orderID|userID`. Confirm sends `{order_id, event_id, seat idx}`, which the client already has from the reserve response, and the server checks the lock value before inserting. That means 2 Redis writes per reserve (the lock and the holds-set entry) instead of 3.
   - Deferred: a per-user cap on active orders (against hoarding) goes with the Epic 9 waiting room.
   - Agreed tests: duplicate booking returns `ErrSeatTaken` (store, plain); 50 buyers `Claim` one seat and exactly 1 wins (Redis, start gate); 50 buyers `Reserve` and `Confirm` and exactly 1 booking results (service with real Redis and Postgres, start gate); wrong user, retry, and expiry (service with fakes). 50 is more than `DB_MAX_CONNS`, so some goroutines wait for a connection. No forced-interleaving test, because it would only re-test Postgres's own unique index.
-- [ ] T3: HTTP endpoints for orders, with handler tests (ADR 9 pattern, faking the service). The seat map moves to reading from the Redis seat state.
+- [ ] T3: The seat map API and the order endpoints (`GET /events/{id}/layout`, `GET /events/{id}/availability`, `POST /orders`, `POST /orders/{id}/confirm`), with handler tests; `booking-api` wired to Redis. ADR 12, plus an ADR 11 amendment.
+  - ✅ Step 1, two endpoints split by rate of change: a static layout (CDN, one day) and live availability (1 s). The layout is a flat seat list; clients build whatever nesting their UI needs.
+  - ✅ Step 2, reserve is idempotent per user and seat: a retry, double click, or second tab gets the existing order back with its original deadline, never extended. The lock value already identifies the owner, so no `Idempotency-Key` (that waits for payments, where there's no natural key).
+  - ✅ Step 3, availability is a packed bitmap in base64, with held and sold merged into "unavailable": a fixed ~13 KB for 80k seats.
+  - ✅ Step 4, prices are dynamic, so they leave the cached layout. They're per seat, dictionary-encoded (distinct prices plus 1 byte per seat), and ride on the availability poll, so they're never more than ~1 s stale.
+  - ✅ Step 5, prices are read from Redis (`booking:prices:{event:N}`), written by the same rebuild as the sold bitmap. Postgres is read for the real price at checkout (Epic 6). The pricing write path (sync update vs queue) waits until one exists.
+  - ✅ Step 6, conversion methods on `Hold` and `Booking` replace the repeated `Order{…}` literals.
+  - Defaults: 404/409/503 (`Retry-After: 1`)/401 error mapping; `X-User-ID` stands in for auth; a strict JSON body decoder.
 - [ ] T4: k6 harness and `make loadtest`, predictions, runs, `docs/experiments/02-booking.md`.
 
 ### Epic 3: merged into Epic 2
@@ -215,3 +224,12 @@ AI features that were considered and rejected:
 - Wrote ADRs 1–8 and the README, which the user reviewed and committed.
 - Closed Epic 1 after a full green `make ci` run. Moved to Go 1.27.4 for GO-2026-6859.
 - Merged Epics 2 and 3. The user questioned building a naive version on purpose: its outcome is already known, so it isn't a real experiment. Epic 2 now builds booking correctly and adds a concurrency test and a k6 harness. AI 1 now follows Epic 2.
+
+### 2026-11-15 to 2026-11-21
+
+- T1: Redis in Compose and CI, plus the holds component. Restructured both services into ports and adapters (ADR 10): `internal/{<svc>, postgres, redis, httpapi}`, after the user questioned keeping Redis code next to the service.
+- Adopted Marina's shipping workflow: one branch and PR per task, squash merge only, `main` protected with all 6 CI jobs required (applies to admins too), a CI badge, and a weekly scheduled CI run. CI had been failing unnoticed on Go 1.27.3.
+- Designed T2 in steps, studying seat maps on large ticketing sites and a dev.to seat-management write-up along the way. Reserve checks seat state in Redis. Seat state is a 1-bit sold bitmap plus a sorted set of live holds scored by expiry (a 2-bit held state was rejected because TTL expiry can't reset bits). Seats are addressed by `(event_id, idx)`. There's no order key: the lock stores `order|user`. ADR 11 records it all (PR #2).
+- Built and merged T2 (PR #3). Reviewed it with a new walkthrough skill (`~/.claude/skills/pr-walkthrough`, user-level).
+- Decided during the review: a 1-minute confirm grace period (ADR 11 amendment); keeping act-then-handle in `book`; the service building `Order`; and `Availability` in its own file. Also made the bitmap maths and Lua scripts readable.
+- Working rules added: get the user's buy-in before fixing a problem they point out; check Marina's example for process questions; Claude files stay in `~/.claude`, never in the repo.

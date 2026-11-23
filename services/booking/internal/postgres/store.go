@@ -30,12 +30,13 @@ func NewStore(db bookingdb.DBTX) *Store {
 	return &Store{q: bookingdb.New(db)}
 }
 
-// ListSeats returns an event's seat map. Booking never asks the event service
-// whether the event exists: no inventory means booking.ErrNoInventory.
-func (s *Store) ListSeats(ctx context.Context, eventID int64) ([]booking.Seat, error) {
-	rows, err := s.q.ListSeats(ctx, eventID)
+// Layout returns an event's static seat layout, ordered by idx. Booking never
+// asks the event service whether the event exists: no inventory means
+// booking.ErrNoInventory.
+func (s *Store) Layout(ctx context.Context, eventID int64) ([]booking.Seat, error) {
+	rows, err := s.q.ListLayout(ctx, eventID)
 	if err != nil {
-		return nil, fmt.Errorf("list seats for event %d: %w", eventID, err)
+		return nil, fmt.Errorf("list layout for event %d: %w", eventID, err)
 	}
 	if len(rows) == 0 {
 		return nil, booking.ErrNoInventory
@@ -43,13 +44,10 @@ func (s *Store) ListSeats(ctx context.Context, eventID int64) ([]booking.Seat, e
 	seats := make([]booking.Seat, len(rows))
 	for i, row := range rows {
 		seats[i] = booking.Seat{
-			ID:         row.ID,
-			Idx:        int(row.Idx),
-			Section:    row.Section,
-			Row:        row.Row,
-			Number:     int(row.Number),
-			PriceCents: int(row.PriceCents),
-			Available:  row.Available,
+			Idx:     int(row.Idx),
+			Section: row.Section,
+			Row:     row.Row,
+			Number:  int(row.Number),
 		}
 	}
 	return seats, nil
@@ -113,21 +111,30 @@ func (s *Store) BookingByOrder(ctx context.Context, orderID string) (booking.Boo
 	}, nil
 }
 
-// Inventory returns the event's seat count and sold seats, for rebuilding
-// Redis seat state.
+// Inventory returns the event's seat count, sold seats, and per-seat prices,
+// for rebuilding Redis seat state.
 func (s *Store) Inventory(ctx context.Context, eventID int64) (booking.Inventory, error) {
-	count, err := s.q.CountSeats(ctx, eventID)
+	priced, err := s.q.ListSeatPrices(ctx, eventID)
 	if err != nil {
-		return booking.Inventory{}, fmt.Errorf("count seats for event %d: %w", eventID, err)
+		return booking.Inventory{}, fmt.Errorf("list seat prices for event %d: %w", eventID, err)
 	}
-	if count == 0 {
+	if len(priced) == 0 {
 		return booking.Inventory{}, booking.ErrNoInventory
+	}
+	inv := booking.Inventory{Seats: len(priced), Prices: make([]int, len(priced))}
+	for i, row := range priced {
+		// Seat state and the API index seats 0…N-1, so a gap would misplace
+		// every later seat's bit and price.
+		if int(row.Idx) != i {
+			return booking.Inventory{}, fmt.Errorf("event %d: seat idx %d where %d was expected; idx must run 0…N-1", eventID, row.Idx, i)
+		}
+		inv.Prices[i] = int(row.PriceCents)
 	}
 	sold, err := s.q.ListSoldSeatIdxs(ctx, eventID)
 	if err != nil {
 		return booking.Inventory{}, fmt.Errorf("list sold seats for event %d: %w", eventID, err)
 	}
-	inv := booking.Inventory{Seats: int(count), Sold: make([]int, len(sold))}
+	inv.Sold = make([]int, len(sold))
 	for i, idx := range sold {
 		inv.Sold[i] = int(idx)
 	}
